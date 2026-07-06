@@ -17,8 +17,8 @@ export function normalizeOsirionToPathGen(input: {
     players[0] ??
     {};
 
-  const shots = numberOrNull(player.shots) ?? 0;
-  const hits = numberOrNull(player.hits) ?? 0;
+  const shots = numberOrNull(player.shots ?? player.totalShots) ?? 0;
+  const hits = numberOrNull(player.hits ?? player.totalHits) ?? 0;
   const replayId = String(info.matchId ?? info.id ?? `pathgen_${jobId}`);
   const parsedAt = new Date().toISOString();
 
@@ -36,13 +36,28 @@ export function normalizeOsirionToPathGen(input: {
     region: stringOrNull(player.matchmakingRegion ?? info.region),
     startedAt: info.startTimestamp ?? info.startedAt ?? null,
     durationSeconds: durationSeconds(info),
-    placement: numberOrNull(player.placement),
-    eliminations: numberOrNull(player.eliminations),
-    assists: numberOrNull(player.assists),
-    deaths: numberOrNull(player.deaths),
-    headshots: numberOrNull(player.headshots),
-    damageDealt: numberOrNull(player.damageToPlayers ?? player.damageDone),
-    damageTaken: numberOrNull(player.damageTakenFromPlayers ?? player.damageTaken),
+    placement: numberOrNull(
+      player.placement ?? player.teamPlacement ?? player.rank ?? player.placementRank,
+    ),
+    eliminations: numberOrNull(
+      player.eliminations ?? player.kills ?? player.numKills ?? player.eliminationCount,
+    ),
+    assists: numberOrNull(player.assists ?? player.assistCount),
+    deaths: numberOrNull(player.deaths ?? player.deathCount),
+    headshots: numberOrNull(player.headshots ?? player.headshotCount),
+    damageDealt: numberOrNull(
+      player.damageToPlayers ??
+        player.damageDone ??
+        player.damage ??
+        player.totalDamage ??
+        player.damageDealt,
+    ),
+    damageTaken: numberOrNull(
+      player.damageTakenFromPlayers ??
+        player.damageTaken ??
+        player.damageReceived ??
+        player.totalDamageTaken,
+    ),
     accuracy: shots > 0 ? Math.round((hits / shots) * 100) : null,
     materialsFarmed:
       (numberOrNull(player.woodFarmed) ?? 0) +
@@ -52,7 +67,9 @@ export function normalizeOsirionToPathGen(input: {
       (numberOrNull(player.distanceTraveledOnFoot) ?? 0) +
       (numberOrNull(player.distanceTraveledInVehicle) ?? 0) +
       (numberOrNull(player.distanceTraveledSkydiving) ?? 0),
-    timeAliveSeconds: numberOrNull(player.timeAlive),
+    timeAliveSeconds: numberOrNull(
+      player.timeAlive ?? player.timeAliveSeconds ?? player.aliveTimeSeconds,
+    ),
     thumbnailUrl: stringOrNull(info.thumbnailUrl),
     createdAt,
     parsedAt,
@@ -192,7 +209,12 @@ function normalizeKeyMoments(events: any): PathGenKeyMoment[] {
 }
 
 function numberOrNull(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function stringOrNull(value: unknown): string | null {

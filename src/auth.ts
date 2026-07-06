@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 
 export interface TokenClaims {
   testerId: string;
@@ -15,7 +15,7 @@ function sign(data: string, secret: string): string {
 }
 
 export function createToken(inviteCode: string, secret: string): { token: string; testerId: string } {
-  const testerId = `tester_${randomUUID()}`;
+  const testerId = stableTesterId(inviteCode);
   const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const payload = b64url(
     JSON.stringify({
@@ -54,4 +54,12 @@ export function secureEquals(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function stableTesterId(inviteCode: string): string {
+  const digest = createHash("sha256")
+    .update(inviteCode.trim().toUpperCase())
+    .digest("hex")
+    .slice(0, 24);
+  return `tester_${digest}`;
 }

@@ -34,7 +34,10 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
   mkdirSync(replayStorageDir, { recursive: true });
   mkdirSync(dirname(replayDataFile), { recursive: true });
 
-  const inviteList = env("PATHGEN_INVITE_CODES", "ROUTELAG-BETA,WRENCH-TEST")
+  const inviteList = env(
+    "PATHGEN_INVITE_CODES",
+    "ROUTELAG-BETA,SIGMA-DALLAS,WRENCH-TEST,BETA-SA-001,BETA-SA-002,BETA-SA-003,BETA-SA-004,BETA-SA-005",
+  )
     .split(",")
     .map((code) => code.trim())
     .filter(Boolean);
