@@ -10,7 +10,8 @@ import type { PathGenConfig } from "../config.js";
 import { OsirionClient } from "./osirionClient.js";
 import { normalizeOsirionToPathGen } from "./pathgenNormalizer.js";
 import type { ReplayStore } from "./replayStore.js";
-import { syncReplayJob } from "./sync.js";
+import { syncReplayJob, initialNextPollAt } from "./sync.js";
+import { runDeepAnalyze } from "./deepAnalyze.js";
 import type { PathGenReplayDetail, ReplayJob } from "./types.js";
 
 interface AuthedReplayRequest extends FastifyRequest {
@@ -67,6 +68,16 @@ export async function registerReplayRoutes(
     }
 
     const fileHash = hash.digest("hex");
+    const existingReplay = store.findReplayByHash(tester.testerId, fileHash);
+    if (existingReplay) {
+      unlinkIfExists(savedPath);
+      const existingJob = store.getJob(existingReplay.summary.jobId, tester.testerId);
+      return {
+        duplicate: true,
+        job: existingJob,
+        replay: normalizeReplaySummary(existingReplay.summary),
+      };
+    }
     const duplicate = store.findJobByHash(tester.testerId, fileHash);
     if (duplicate && duplicate.status !== "failed") {
       unlinkIfExists(savedPath);
@@ -92,6 +103,8 @@ export async function registerReplayRoutes(
         store.updateJob(job.id, {
           providerTrackingId: submitted.trackingId,
           status: "osirion_pending",
+          nextPollAt: initialNextPollAt(config),
+          statusPollCount: 0,
         }) ?? job;
     } catch (error) {
       job =
@@ -105,31 +118,32 @@ export async function registerReplayRoutes(
     return reply.code(201).send({ duplicate: false, job });
   });
 
-  app.get("/api/replays/jobs", async (request) => {
+  app.get("/api/replays/quota", async (request) => {
     const tester = (request as AuthedReplayRequest).tester;
-    const jobs = store.listJobs(tester.testerId);
-    const synced = await Promise.all(
-      jobs.map((job) =>
-        job.providerTrackingId && job.status !== "parsed" && job.status !== "failed"
-          ? syncReplayJob(job, store, osirion)
-          : Promise.resolve(job),
-      ),
-    );
-    return { jobs: synced };
+    return store.getDeepAnalyzeQuota(tester.testerId, config);
   });
 
-  app.get<{ Params: { jobId: string } }>("/api/replays/jobs/:jobId", async (request, reply) => {
+  app.get("/api/replays/jobs", async (request) => {
+    const tester = (request as AuthedReplayRequest).tester;
+    return { jobs: store.listJobs(tester.testerId) };
+  });
+
+  app.get<{ Params: { jobId: string }; Querystring: { sync?: string } }>(
+    "/api/replays/jobs/:jobId",
+    async (request, reply) => {
     const tester = (request as AuthedReplayRequest).tester;
     let job = store.getJob(request.params.jobId, tester.testerId);
     if (!job) return reply.code(404).send({ error: "Replay job not found." });
-    job = await syncReplayJob(job, store, osirion);
+    if (request.query.sync === "1") {
+      job = await syncReplayJob(job, store, osirion, config, { force: true });
+    }
     return { job };
   });
 
   app.get("/api/replays", async (request) => {
     const tester = (request as AuthedReplayRequest).tester;
     return {
-      replays: store.listReplays(tester.testerId).map((replay) => replay.summary),
+      replays: store.listReplays(tester.testerId).map((replay) => normalizeReplaySummary(replay.summary)),
     };
   });
 
@@ -139,6 +153,33 @@ export async function registerReplayRoutes(
     if (!replay) return reply.code(404).send({ error: "Replay not found." });
     return { replay: publicReplay(replay) };
   });
+
+  app.post<{ Params: { replayId: string } }>(
+    "/api/replays/:replayId/deep-analyze",
+    async (request, reply) => {
+      const tester = (request as AuthedReplayRequest).tester;
+      try {
+        const replay = await runDeepAnalyze(
+          request.params.replayId,
+          tester.testerId,
+          store,
+          osirion,
+          config,
+        );
+        const quota = store.getDeepAnalyzeQuota(tester.testerId, config);
+        return { replay: publicReplay(replay), quota };
+      } catch (error) {
+        const message = safeError(error);
+        const status =
+          message.includes("limit reached") ||
+          message.includes("wait") ||
+          message.includes("used all")
+            ? 402
+            : 400;
+        return reply.code(status).send({ error: message });
+      }
+    },
+  );
 
   app.post<{ Params: { replayId: string } }>("/api/replays/:replayId/reparse", async (request, reply) => {
     const tester = (request as AuthedReplayRequest).tester;
@@ -164,7 +205,19 @@ export async function registerReplayRoutes(
 
 function publicReplay(replay: PathGenReplayDetail): PathGenReplayDetail {
   const { rawProviderMetadata, ...safeReplay } = replay;
-  return safeReplay;
+  return {
+    ...safeReplay,
+    summary: normalizeReplaySummary(safeReplay.summary),
+  };
+}
+
+function normalizeReplaySummary(summary: PathGenReplayDetail["summary"]) {
+  return {
+    ...summary,
+    parseTier: summary.parseTier ?? "basic",
+    deepParseStatus:
+      summary.deepParseStatus ?? (summary.status === "parsed" ? "available" : "none"),
+  };
 }
 
 function sanitizeFileName(fileName: string): string {

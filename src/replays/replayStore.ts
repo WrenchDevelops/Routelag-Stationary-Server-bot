@@ -3,10 +3,31 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type { PathGenReplayDetail, ReplayJob, ReplayJobStatus } from "./types.js";
+import { buildDeepAnalyzeQuota, type DeepAnalyzeQuota } from "./quota.js";
+import type { PathGenConfig } from "../config.js";
+
+interface DeepAnalyzeUsage {
+  monthKey: string;
+  monthCount: number;
+  dayKey: string;
+  dayCount: number;
+  lastDeepAnalyzeAt?: string;
+}
 
 interface ReplayDb {
   jobs: ReplayJob[];
   replays: PathGenReplayDetail[];
+  deepAnalyzeUsage: Record<string, DeepAnalyzeUsage>;
+}
+
+function currentMonthKey(): string {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function currentDayKey(): string {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
 }
 
 export class ReplayStore {
@@ -36,6 +57,37 @@ export class ReplayStore {
 
   findJobByHash(userId: string, fileHash: string): ReplayJob | null {
     return this.read().jobs.find((job) => job.userId === userId && job.fileHash === fileHash) ?? null;
+  }
+
+  findReplayByMatchId(userId: string, matchId: string): PathGenReplayDetail | null {
+    return (
+      this.read().replays.find(
+        (replay) => replay.summary.userId === userId && replay.summary.id === matchId,
+      ) ?? null
+    );
+  }
+
+  findReplayByHash(userId: string, fileHash: string): PathGenReplayDetail | null {
+    return (
+      this.read().replays.find(
+        (replay) => replay.summary.userId === userId && replay.summary.fileHash === fileHash,
+      ) ?? null
+    );
+  }
+
+  getDeepAnalyzeUsage(userId: string): DeepAnalyzeUsage | undefined {
+    const usage = this.read().deepAnalyzeUsage[userId];
+    if (!usage) return undefined;
+    if ("count" in usage && !("monthCount" in usage)) {
+      const legacy = usage as { monthKey: string; count: number };
+      return {
+        monthKey: legacy.monthKey,
+        monthCount: legacy.count,
+        dayKey: currentDayKey(),
+        dayCount: 0,
+      };
+    }
+    return usage;
   }
 
   createJob(input: Omit<ReplayJob, "id" | "createdAt" | "updatedAt">): ReplayJob {
@@ -93,11 +145,37 @@ export class ReplayStore {
     });
   }
 
+  getDeepAnalyzeQuota(userId: string, config: PathGenConfig): DeepAnalyzeQuota {
+    return buildDeepAnalyzeQuota(userId, this.getDeepAnalyzeUsage(userId), config);
+  }
+
+  incrementDeepAnalyzeUsage(userId: string): void {
+    const monthKey = currentMonthKey();
+    const dayKey = currentDayKey();
+    const db = this.read();
+    const current = this.getDeepAnalyzeUsage(userId);
+    const monthCount = current?.monthKey === monthKey ? current.monthCount + 1 : 1;
+    const dayCount = current?.dayKey === dayKey ? current.dayCount + 1 : 1;
+    db.deepAnalyzeUsage[userId] = {
+      monthKey,
+      monthCount,
+      dayKey,
+      dayCount,
+      lastDeepAnalyzeAt: new Date().toISOString(),
+    };
+    this.write(db);
+  }
+
   private read(): ReplayDb {
     if (!existsSync(this.filePath)) {
-      return { jobs: [], replays: [] };
+      return { jobs: [], replays: [], deepAnalyzeUsage: {} };
     }
-    return JSON.parse(readFileSync(this.filePath, "utf8")) as ReplayDb;
+    const parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as Partial<ReplayDb>;
+    return {
+      jobs: parsed.jobs ?? [],
+      replays: parsed.replays ?? [],
+      deepAnalyzeUsage: parsed.deepAnalyzeUsage ?? {},
+    };
   }
 
   private write(db: ReplayDb): void {

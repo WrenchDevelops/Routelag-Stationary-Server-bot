@@ -14,6 +14,13 @@ export interface PathGenConfig {
   replayStorageDir: string;
   replayDataFile: string;
   replayPollIntervalMs: number;
+  replayFirstPollDelayMs: number;
+  replayMaxStatusPolls: number;
+  /** Players-only basic fetch skips getMatchInfo (~10 credits saved per replay). */
+  basicParsePlayersOnly: boolean;
+  deepAnalyzeMonthlyLimit: number;
+  deepAnalyzeDailyLimit: number;
+  deepAnalyzeCooldownMs: number;
 }
 
 function env(name: string, fallback = ""): string {
@@ -44,7 +51,13 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     replayUploadMaxMb: Number(env("REPLAY_UPLOAD_MAX_MB", "250")),
     replayStorageDir,
     replayDataFile,
-    replayPollIntervalMs: Number(env("REPLAY_POLL_INTERVAL_MS", "30000")),
+    replayPollIntervalMs: Number(env("REPLAY_POLL_INTERVAL_MS", "90000")),
+    replayFirstPollDelayMs: Number(env("REPLAY_FIRST_POLL_DELAY_MS", "60000")),
+    replayMaxStatusPolls: Number(env("REPLAY_MAX_STATUS_POLLS", "18")),
+    basicParsePlayersOnly: env("BASIC_PARSE_PLAYERS_ONLY", "true") !== "false",
+    deepAnalyzeMonthlyLimit: Number(env("DEEP_ANALYZE_MONTHLY_LIMIT", "10")),
+    deepAnalyzeDailyLimit: Number(env("DEEP_ANALYZE_DAILY_LIMIT", "3")),
+    deepAnalyzeCooldownMs: Number(env("DEEP_ANALYZE_COOLDOWN_MS", "120000")),
     ...overrides,
   };
 }

@@ -86,9 +86,9 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
 
   await registerReplayRoutes(app, config, store);
 
-  const pollMs = Math.max(config.replayPollIntervalMs, 5000);
+  const pollMs = Math.max(config.replayPollIntervalMs, 60_000);
   const pollTimer = setInterval(() => {
-    void syncPendingJobs(store, osirion).catch((error) => {
+    void syncPendingJobs(store, osirion, config).catch((error) => {
       app.log.warn({ err: error }, "Replay poll cycle failed");
     });
   }, pollMs);

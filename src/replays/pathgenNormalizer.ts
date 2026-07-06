@@ -29,6 +29,8 @@ export function normalizeOsirionToPathGen(input: {
     fileName,
     fileHash,
     status: "parsed" as const,
+    parseTier: "basic" as const,
+    deepParseStatus: "available" as const,
     mode: stringOrNull(info.gameMode ?? info.mode),
     playlist: stringOrNull(info.playlist ?? info.playlistName),
     region: stringOrNull(player.matchmakingRegion ?? info.region),
@@ -37,6 +39,8 @@ export function normalizeOsirionToPathGen(input: {
     placement: numberOrNull(player.placement),
     eliminations: numberOrNull(player.eliminations),
     assists: numberOrNull(player.assists),
+    deaths: numberOrNull(player.deaths),
+    headshots: numberOrNull(player.headshots),
     damageDealt: numberOrNull(player.damageToPlayers ?? player.damageDone),
     damageTaken: numberOrNull(player.damageTakenFromPlayers ?? player.damageTaken),
     accuracy: shots > 0 ? Math.round((hits / shots) * 100) : null,
@@ -48,6 +52,7 @@ export function normalizeOsirionToPathGen(input: {
       (numberOrNull(player.distanceTraveledOnFoot) ?? 0) +
       (numberOrNull(player.distanceTraveledInVehicle) ?? 0) +
       (numberOrNull(player.distanceTraveledSkydiving) ?? 0),
+    timeAliveSeconds: numberOrNull(player.timeAlive),
     thumbnailUrl: stringOrNull(info.thumbnailUrl),
     createdAt,
     parsedAt,
@@ -62,14 +67,98 @@ export function normalizeOsirionToPathGen(input: {
     keyMoments: normalizeKeyMoments(match?.events),
     fights: [],
     eliminations: eventList(match?.events, "eliminationEvents"),
-    deaths: eventList(match?.events, "deathEvents"),
-    damageEvents: eventList(match?.events, "damageEvents"),
+    deaths: eventList(match?.events, "knockedDownEvents"),
+    damageEvents: [],
     inventoryTimeline: eventList(match?.events, "playerInventoryUpdateEvents"),
+    zoneStats: [],
     rawProviderMetadata: {
       provider: "osirion",
       matchId: replayId,
     },
   };
+}
+
+export function cloneReplayForJob(
+  source: PathGenReplayDetail,
+  input: { jobId: string; fileName: string; fileHash: string; createdAt: string },
+): PathGenReplayDetail {
+  const parsedAt = new Date().toISOString();
+  return {
+    ...source,
+    summary: {
+      ...source.summary,
+      jobId: input.jobId,
+      fileName: input.fileName,
+      fileHash: input.fileHash,
+      createdAt: input.createdAt,
+      parsedAt,
+      parseTier: source.summary.parseTier ?? "basic",
+      deepParseStatus: source.summary.deepParseStatus ?? "available",
+    },
+  };
+}
+
+export function mergeDeepParseIntoReplay(
+  replay: PathGenReplayDetail,
+  deep: { weapons?: unknown; zoneStats?: unknown; events?: any },
+): PathGenReplayDetail {
+  const events = deep.events ?? {};
+  const parsedAt = new Date().toISOString();
+  return {
+    ...replay,
+    summary: {
+      ...replay.summary,
+      parseTier: "deep",
+      deepParseStatus: "parsed",
+      deepParsedAt: parsedAt,
+      deepParseError: null,
+    },
+    stats: {
+      ...(replay.stats ?? {}),
+      weapons: deep.weapons ?? [],
+    },
+    zoneStats: Array.isArray(deep.zoneStats) ? deep.zoneStats : [],
+    eliminations: eventList(events, "eliminationEvents"),
+    deaths: eventList(events, "knockedDownEvents"),
+    inventoryTimeline: eventList(events, "playerInventoryUpdateEvents"),
+    rotations: eventList(events, "safeZoneUpdateEvents"),
+    timeline: flattenEvents(events),
+    keyMoments: buildKeyMoments(events),
+  };
+}
+
+function buildKeyMoments(events: any): PathGenKeyMoment[] {
+  const explicit = normalizeKeyMoments(events);
+  if (explicit.length) return explicit;
+
+  const moments: PathGenKeyMoment[] = [];
+  for (const [index, event] of eventList(events, "eliminationEvents").entries()) {
+    const item = event as any;
+    moments.push({
+      id: `elim_${index}`,
+      type: "elimination",
+      timestampSeconds: timestampSeconds(item?.timestamp),
+      title: item?.selfElimination ? "Eliminated" : "Elimination",
+      description: item?.distance != null ? `${Math.round(item.distance)}m` : undefined,
+      importance: "high",
+    });
+  }
+  for (const [index, event] of eventList(events, "knockedDownEvents").entries()) {
+    const item = event as any;
+    moments.push({
+      id: `knock_${index}`,
+      type: "knocked",
+      timestampSeconds: timestampSeconds(item?.timestamp),
+      title: "Knocked down",
+      importance: "medium",
+    });
+  }
+  return moments.sort((a, b) => a.timestampSeconds - b.timestampSeconds);
+}
+
+function timestampSeconds(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return value > 1_000_000_000_000 ? Math.round(value / 1000) : Math.round(value);
 }
 
 function durationSeconds(info: any): number | null {

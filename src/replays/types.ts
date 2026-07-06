@@ -9,6 +9,8 @@ export type ReplayJobStatus =
   | "parsed"
   | "failed";
 
+export type DeepParseStatus = "none" | "available" | "analyzing" | "parsed" | "failed";
+
 export interface ReplayJob {
   id: string;
   userId: string;
@@ -27,6 +29,9 @@ export interface ReplayJob {
   updatedAt: string;
   parsedAt?: string;
   lastCheckedAt?: string;
+  /** Do not call Osirion before this time (saves status-poll credits). */
+  nextPollAt?: string;
+  statusPollCount?: number;
 }
 
 export interface PathGenKeyMoment {
@@ -46,6 +51,10 @@ export interface PathGenReplaySummary {
   fileName: string;
   fileHash: string;
   status: "parsing" | "parsed" | "failed";
+  parseTier: "basic" | "deep";
+  deepParseStatus: DeepParseStatus;
+  deepParsedAt?: string | null;
+  deepParseError?: string | null;
   mode?: string | null;
   playlist?: string | null;
   region?: string | null;
@@ -54,11 +63,14 @@ export interface PathGenReplaySummary {
   placement?: number | null;
   eliminations?: number | null;
   assists?: number | null;
+  deaths?: number | null;
+  headshots?: number | null;
   damageDealt?: number | null;
   damageTaken?: number | null;
   accuracy?: number | null;
   materialsFarmed?: number | null;
   distanceTraveled?: number | null;
+  timeAliveSeconds?: number | null;
   thumbnailUrl?: string | null;
   createdAt: string;
   parsedAt?: string | null;
@@ -77,5 +89,6 @@ export interface PathGenReplayDetail {
   damageEvents?: unknown[];
   inventoryTimeline?: unknown[];
   rotations?: unknown[];
+  zoneStats?: unknown[];
   rawProviderMetadata?: unknown;
 }
