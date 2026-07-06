@@ -1,0 +1,22 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { buildApp } from "../src/app.js";
+import { loadConfig } from "../src/config.js";
+
+test("health reports pathgen service", async () => {
+  const config = loadConfig({
+    port: 0,
+    authSecret: "test-secret",
+    inviteCodes: new Set(["TEST-CODE"]),
+    osirionApiKey: "",
+  });
+  const app = await buildApp(config);
+  await app.ready();
+  const response = await app.inject({ method: "GET", url: "/health" });
+  assert.equal(response.statusCode, 200);
+  const body = response.json<{ ok: boolean; service: string }>();
+  assert.equal(body.ok, true);
+  assert.equal(body.service, "routelag-stationary-server");
+  await app.close();
+});
