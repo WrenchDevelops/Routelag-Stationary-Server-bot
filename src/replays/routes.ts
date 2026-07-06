@@ -107,7 +107,15 @@ export async function registerReplayRoutes(
 
   app.get("/api/replays/jobs", async (request) => {
     const tester = (request as AuthedReplayRequest).tester;
-    return { jobs: store.listJobs(tester.testerId) };
+    const jobs = store.listJobs(tester.testerId);
+    const synced = await Promise.all(
+      jobs.map((job) =>
+        job.providerTrackingId && job.status !== "parsed" && job.status !== "failed"
+          ? syncReplayJob(job, store, osirion)
+          : Promise.resolve(job),
+      ),
+    );
+    return { jobs: synced };
   });
 
   app.get<{ Params: { jobId: string } }>("/api/replays/jobs/:jobId", async (request, reply) => {

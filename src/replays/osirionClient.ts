@@ -65,6 +65,6 @@ export class OsirionClient {
     if (!ClientCtor) {
       throw new Error("@osirion/api did not expose OsirionClient.");
     }
-    return new ClientCtor(this.config.osirionApiKey, this.config.osirionApiBaseUrl || undefined);
+    return new ClientCtor(this.config.osirionApiKey);
   }
 }
