@@ -229,7 +229,11 @@ export async function registerEpicRoutes(
         return reply
           .type("text/html")
           .code(503)
-          .send(errorHtml("Cloud user sync is offline; Epic account could not be saved."));
+          .send(
+            errorHtml(
+              "Cloud user sync is offline. Set FIREBASE_SERVICE_ACCOUNT_JSON on the PathGen Railway service, then redeploy.",
+            ),
+          );
       }
 
       const user = await withTimeout(
@@ -253,7 +257,10 @@ export async function registerEpicRoutes(
       return reply.type("text/html").send(successHtml(user.epicDisplayName || displayName));
     } catch (err) {
       app.log.error({ err, testerId: pending.testerId }, "Epic OAuth callback failed");
-      const message = err instanceof Error ? err.message : "Authentication failed";
+      const raw = err instanceof Error ? err.message : "Authentication failed";
+      const message = /default credentials|Could not load the default credentials/i.test(raw)
+        ? "Firebase credentials are missing on PathGen. Set FIREBASE_SERVICE_ACCOUNT_JSON on Railway and redeploy."
+        : raw;
       return reply.type("text/html").code(500).send(errorHtml(message));
     }
   });

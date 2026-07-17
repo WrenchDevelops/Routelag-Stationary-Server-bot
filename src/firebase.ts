@@ -37,6 +37,10 @@ function normalizePrivateKey(value: string | undefined): string | undefined {
   return value.replace(/\\n/g, "\n");
 }
 
+function envFlag(name: string): boolean {
+  return process.env[name]?.trim().toLowerCase() === "true";
+}
+
 function firestoreFor(app: App): Firestore {
   const db = getFirestore(app);
   try {
@@ -82,6 +86,11 @@ export function initFirebase(options: {
         client_email?: string;
         private_key?: string;
       };
+      if (!parsed.client_email || !parsed.private_key) {
+        throw new Error(
+          "FIREBASE_SERVICE_ACCOUNT_JSON is missing client_email or private_key",
+        );
+      }
       app = initializeApp({
         credential: cert({
           projectId: parsed.project_id ?? projectId,
@@ -100,13 +109,17 @@ export function initFirebase(options: {
           credential: cert(credentialPath),
           projectId: raw.project_id ?? projectId,
         });
-      } else if (projectId) {
+      } else if (envFlag("FIREBASE_USE_ADC") && projectId) {
+        // Opt-in only — ADC is unavailable on Railway and produces a late runtime failure.
         app = initializeApp({
           credential: applicationDefault(),
           projectId,
         });
       } else {
-        runtime = { enabled: false, projectId: null, app: null, db: null };
+        console.warn(
+          "[Firebase] No FIREBASE_SERVICE_ACCOUNT_JSON or credentials file found; cloud sync disabled.",
+        );
+        runtime = { enabled: false, projectId: projectId ?? null, app: null, db: null };
         return runtime;
       }
     }
