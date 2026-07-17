@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import ws from "ws";
 
 export interface SupabaseRuntime {
   enabled: boolean;
@@ -32,11 +33,17 @@ export function initSupabase(options: {
   }
 
   try {
+    // Railway currently runs Node 20; newer supabase-js expects a global WebSocket
+    // (Node 22+) or an explicit transport. PathGen only needs PostgREST, not realtime.
     const client = createClient(url, serviceRoleKey, {
       auth: {
         persistSession: false,
         autoRefreshToken: false,
         detectSessionInUrl: false,
+      },
+      realtime: {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        transport: ws as any,
       },
     });
     runtime = { enabled: true, url, client };

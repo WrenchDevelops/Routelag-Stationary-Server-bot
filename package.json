@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "description": "PathGen replay parsing and RouteLag companion API. Deploy: github.com/WrenchDevelops/Routelag-Stationary-Server-bot",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
@@ -16,10 +19,12 @@
     "@fastify/rate-limit": "^10.3.0",
     "@osirion/api": "^2.0.1",
     "@supabase/supabase-js": "^2.110.7",
-    "fastify": "^5.4.0"
+    "fastify": "^5.4.0",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }
