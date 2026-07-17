@@ -39,6 +39,9 @@ function normalizeUser(
     inviteCode: typeof data?.inviteCode === "string" ? data.inviteCode : inviteCode,
     profile: asProfile(data?.profile),
     preferences: asPreferences(data?.preferences),
+    epicAccountId: typeof data?.epicAccountId === "string" ? data.epicAccountId : undefined,
+    epicDisplayName: typeof data?.epicDisplayName === "string" ? data.epicDisplayName : undefined,
+    epicLinkedAt: typeof data?.epicLinkedAt === "string" ? data.epicLinkedAt : undefined,
     createdAt,
     updatedAt,
     lastLoginAt,
@@ -167,6 +170,56 @@ export class UserStore {
     } catch (error) {
       console.warn("[Firebase] Failed to touch user login:", error);
     }
+  }
+
+  async linkEpicAccount(
+    testerId: string,
+    inviteCode: string,
+    epic: { epicAccountId: string; epicDisplayName: string },
+  ): Promise<CloudUserDocument> {
+    const existing = (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode));
+    const stamp = nowIso();
+    await this.userRef(testerId).set(
+      {
+        testerId,
+        inviteCode: inviteCode || existing.inviteCode,
+        epicAccountId: epic.epicAccountId,
+        epicDisplayName: epic.epicDisplayName,
+        epicLinkedAt: stamp,
+        updatedAt: stamp,
+      },
+      { merge: true },
+    );
+    return {
+      ...existing,
+      inviteCode: inviteCode || existing.inviteCode,
+      epicAccountId: epic.epicAccountId,
+      epicDisplayName: epic.epicDisplayName,
+      epicLinkedAt: stamp,
+      updatedAt: stamp,
+    };
+  }
+
+  async unlinkEpicAccount(testerId: string, inviteCode: string): Promise<CloudUserDocument> {
+    const existing = (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode));
+    const stamp = nowIso();
+    await this.userRef(testerId).set(
+      {
+        epicAccountId: FieldValue.delete(),
+        epicDisplayName: FieldValue.delete(),
+        epicLinkedAt: FieldValue.delete(),
+        updatedAt: stamp,
+      },
+      { merge: true },
+    );
+    return {
+      ...existing,
+      inviteCode: inviteCode || existing.inviteCode,
+      epicAccountId: undefined,
+      epicDisplayName: undefined,
+      epicLinkedAt: undefined,
+      updatedAt: stamp,
+    };
   }
 
   /** Soft-delete helper for future account wipe flows. */

@@ -33,6 +33,10 @@ export interface CloudUserDocument {
   inviteCode: string;
   profile: CloudTesterProfile;
   preferences: CloudAppPreferences;
+  /** Epic Account Services account id (sub), when linked. */
+  epicAccountId?: string;
+  epicDisplayName?: string;
+  epicLinkedAt?: string;
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string;

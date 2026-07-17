@@ -25,6 +25,10 @@ export interface PathGenConfig {
   firebaseCredentialsPath: string;
   firebaseCredentialsJson: string;
   firebaseDisabled: boolean;
+  epicClientId: string;
+  epicClientSecret: string;
+  /** Must match a Redirect URL registered on the Epic client exactly. */
+  epicRedirectUri: string;
 }
 
 function env(name: string, fallback = ""): string {
@@ -79,6 +83,14 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     ),
     firebaseCredentialsJson: env("FIREBASE_SERVICE_ACCOUNT_JSON"),
     firebaseDisabled: env("FIREBASE_DISABLED", "false") === "true",
+    epicClientId: env("EPIC_CLIENT_ID"),
+    epicClientSecret: env("EPIC_CLIENT_SECRET"),
+    // Default matches the Redirect URL already registered on the Epic client.
+    // fortnitepathtopro.com forwards ?action=epic-callback to PathGen /api/epic/callback.
+    epicRedirectUri: env(
+      "EPIC_REDIRECT_URI",
+      "https://www.fortnitepathtopro.com/api/discord-auth?action=epic-callback",
+    ),
     ...overrides,
   };
 }

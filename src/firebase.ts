@@ -14,12 +14,16 @@ export interface FirebaseRuntime {
 let runtime: FirebaseRuntime | null = null;
 
 function resolveCredentialPath(configuredPath: string): string | null {
-  const candidates = [
-    configuredPath,
-    resolve(process.cwd(), configuredPath),
-    resolve(process.cwd(), "secrets/firebase-adminsdk.json"),
-    resolve(import.meta.dirname, "../secrets/firebase-adminsdk.json"),
-  ].filter(Boolean);
+  const candidates: string[] = [];
+  if (configuredPath.trim()) {
+    candidates.push(configuredPath, resolve(process.cwd(), configuredPath));
+  }
+  candidates.push(resolve(process.cwd(), "secrets/firebase-adminsdk.json"));
+  // import.meta.dirname is Node 20.11+; older runtimes leave it undefined.
+  const moduleDir = typeof import.meta.dirname === "string" ? import.meta.dirname : null;
+  if (moduleDir) {
+    candidates.push(resolve(moduleDir, "../secrets/firebase-adminsdk.json"));
+  }
 
   for (const candidate of candidates) {
     if (candidate && existsSync(candidate)) return candidate;
