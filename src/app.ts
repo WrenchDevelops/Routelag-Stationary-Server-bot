@@ -77,6 +77,9 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
     osirionConfigured: Boolean(config.osirionApiKey),
     firebaseConfigured: users.enabled,
     firebaseProjectId: firebase.projectId,
+    // Railway injects these; useful to confirm which git SHA is live.
+    gitSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RAILWAY_GIT_COMMIT_SHA_SHORT ?? null,
+    buildAt: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
   }));
 
   app.post<{ Body: { inviteCode?: string; code?: string; emailOrInvite?: string } }>(

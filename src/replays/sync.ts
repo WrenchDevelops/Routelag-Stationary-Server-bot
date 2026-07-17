@@ -133,11 +133,34 @@ export async function syncReplayJob(
       }) ?? job
     );
   } catch (error) {
+    const message = safeError(error);
+    // Transient HTML/JSON parse failures (bad base URL, edge HTML, brief outages)
+    // should not permanently fail a job that Osirion may already have parsed.
+    const transient =
+      /Unexpected token\s*</i.test(message) ||
+      /returned HTML instead of JSON/i.test(message) ||
+      /returned non-JSON/i.test(message) ||
+      /fetch failed/i.test(message) ||
+      /ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(message);
+
+    if (transient && pollCount < config.replayMaxStatusPolls) {
+      return (
+        store.updateJob(job.id, {
+          status: "osirion_pending",
+          lastCheckedAt: new Date().toISOString(),
+          statusPollCount: pollCount,
+          nextPollAt: scheduleNextPoll(Math.min(intervalMs, 30_000)),
+          errorCode: "OSIRION_POLL_RETRYING",
+          errorMessage: `Temporary Osirion status error (will retry): ${message}`,
+        }) ?? job
+      );
+    }
+
     return (
       store.updateJob(job.id, {
         status: "failed",
         errorCode: "OSIRION_POLL_FAILED",
-        errorMessage: safeError(error),
+        errorMessage: message,
         statusPollCount: pollCount,
       }) ?? job
     );
