@@ -85,13 +85,21 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     firebaseDisabled: env("FIREBASE_DISABLED", "false") === "true",
     epicClientId: env("EPIC_CLIENT_ID"),
     epicClientSecret: env("EPIC_CLIENT_SECRET"),
-    // Prefer PathGen's own callback (register this Redirect URL on the Epic client).
-    // fortnitepathtopro.com/api/discord-auth?action=epic-callback also works once it
-    // forwards unknown states to PathGen.
-    epicRedirectUri: env(
-      "EPIC_REDIRECT_URI",
-      "https://routelag-stationary-server-bot-production.up.railway.app/api/epic/callback",
-    ),
+    // Zer0 must land on PathGen — not fortnitepathtopro (that site's state store is separate).
+    // Register this exact Redirect URL on the Epic client.
+    epicRedirectUri: resolveEpicRedirectUri(),
     ...overrides,
   };
+}
+
+const PATHGEN_EPIC_CALLBACK =
+  "https://routelag-stationary-server-bot-production.up.railway.app/api/epic/callback";
+
+function resolveEpicRedirectUri(): string {
+  const configured = env("EPIC_REDIRECT_URI", PATHGEN_EPIC_CALLBACK);
+  // Old Railway env still pointed at fortnitepathtopro.com, which rejects PathGen states.
+  if (/fortnitepathtopro\.com/i.test(configured)) {
+    return PATHGEN_EPIC_CALLBACK;
+  }
+  return configured;
 }
