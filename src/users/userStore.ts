@@ -222,6 +222,38 @@ export class UserStore {
     };
   }
 
+  async saveEpicOAuthState(
+    state: string,
+    payload: { testerId: string; inviteCode: string; expiresAt: number },
+  ): Promise<void> {
+    await this.db()
+      .collection("pathgen_epic_oauth_states")
+      .doc(state)
+      .set({
+        testerId: payload.testerId,
+        inviteCode: payload.inviteCode,
+        expiresAt: payload.expiresAt,
+        createdAt: nowIso(),
+      });
+  }
+
+  async consumeEpicOAuthState(
+    state: string,
+  ): Promise<{ testerId: string; inviteCode: string } | null> {
+    const ref = this.db().collection("pathgen_epic_oauth_states").doc(state);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+    const data = snap.data() as {
+      testerId?: string;
+      inviteCode?: string;
+      expiresAt?: number;
+    };
+    await ref.delete();
+    if (!data.testerId || typeof data.expiresAt !== "number") return null;
+    if (data.expiresAt < Date.now()) return null;
+    return { testerId: data.testerId, inviteCode: data.inviteCode ?? "" };
+  }
+
   /** Soft-delete helper for future account wipe flows. */
   async deleteUser(testerId: string): Promise<void> {
     await this.userRef(testerId).set(

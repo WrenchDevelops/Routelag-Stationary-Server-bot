@@ -5,8 +5,8 @@ import type { PathGenConfig } from "../config.js";
 import type { UserStore } from "../users/userStore.js";
 import {
   buildEpicAuthorizeUrl,
-  consumeEpicLinkState,
-  createEpicLinkState,
+  createEpicLinkStateValue,
+  epicLinkExpiresAt,
   exchangeEpicAuthorizationCode,
   fetchEpicUserInfo,
   fingerprintClientId,
@@ -137,7 +137,12 @@ export async function registerEpicRoutes(
     if (!users.enabled) return firebaseUnavailable(reply);
 
     const tester = (request as AuthedRequest).tester;
-    const state = createEpicLinkState(tester.testerId, tester.inviteCode);
+    const state = createEpicLinkStateValue();
+    await users.saveEpicOAuthState(state, {
+      testerId: tester.testerId,
+      inviteCode: tester.inviteCode,
+      expiresAt: epicLinkExpiresAt(),
+    });
     const url = buildEpicAuthorizeUrl(epic, state);
 
     app.log.info(
@@ -172,7 +177,7 @@ export async function registerEpicRoutes(
       return reply.type("text/html").code(400).send(errorHtml("Missing authorization code or state."));
     }
 
-    const pending = consumeEpicLinkState(state);
+    const pending = await users.consumeEpicOAuthState(state);
     if (!pending) {
       return reply
         .type("text/html")

@@ -33,28 +33,14 @@ export interface PendingEpicLink {
   createdAt: number;
 }
 
-const pendingLinks = new Map<string, PendingEpicLink>();
 const PENDING_TTL_MS = 15 * 60 * 1000;
 
-function prunePending(): void {
-  const cutoff = Date.now() - PENDING_TTL_MS;
-  for (const [state, entry] of pendingLinks) {
-    if (entry.createdAt < cutoff) pendingLinks.delete(state);
-  }
+export function createEpicLinkStateValue(): string {
+  return randomBytes(24).toString("hex");
 }
 
-export function createEpicLinkState(testerId: string, inviteCode: string): string {
-  prunePending();
-  const state = randomBytes(24).toString("hex");
-  pendingLinks.set(state, { testerId, inviteCode, createdAt: Date.now() });
-  return state;
-}
-
-export function consumeEpicLinkState(state: string): PendingEpicLink | null {
-  prunePending();
-  const entry = pendingLinks.get(state) ?? null;
-  if (entry) pendingLinks.delete(state);
-  return entry;
+export function epicLinkExpiresAt(now = Date.now()): number {
+  return now + PENDING_TTL_MS;
 }
 
 export function buildEpicAuthorizeUrl(config: EpicOAuthConfig, state: string): string {
