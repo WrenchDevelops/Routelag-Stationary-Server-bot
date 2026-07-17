@@ -5,6 +5,7 @@ import {
   coerceUploadStatusPayload,
   normalizePlayersList,
   normalizeUploadStatus,
+  resolveOsirionApiHost,
 } from "../src/replays/osirionClient.js";
 
 test("numeric STATUS_COMPLETE is complete", () => {
@@ -57,4 +58,14 @@ test("normalizePlayersList unwraps playerStatsWrappers", () => {
   assert.equal(players.length, 2);
   assert.equal(players[0]?.placement, 7);
   assert.equal(players[0]?.isReplayOwner, true);
+});
+
+test("resolveOsirionApiHost rejects website hosts that return HTML", () => {
+  assert.equal(resolveOsirionApiHost(""), "https://api.osirion.gg");
+  assert.equal(resolveOsirionApiHost("https://osirion.gg"), "https://api.osirion.gg");
+  assert.equal(resolveOsirionApiHost("https://www.osirion.gg/app"), "https://api.osirion.gg");
+  assert.equal(
+    resolveOsirionApiHost("https://api.osirion.gg/"),
+    "https://api.osirion.gg",
+  );
 });

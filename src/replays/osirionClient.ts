@@ -18,6 +18,48 @@ export type NormalizedOsirionUploadStatus =
 
 const DEFAULT_OSIRION_API_HOST = "https://api.osirion.gg";
 
+/**
+ * Resolve the Osirion API host. Misconfigured values (website URL, docs, Railway app)
+ * return HTML and surface as `Unexpected token < in JSON at position 0`.
+ */
+export function resolveOsirionApiHost(configured?: string): string {
+  const trimmed = (configured ?? "").trim().replace(/\/+$/, "");
+  if (!trimmed) return DEFAULT_OSIRION_API_HOST;
+  try {
+    const url = new URL(trimmed);
+    const host = url.hostname.toLowerCase();
+    const looksLikeApi =
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host.startsWith("api.") ||
+      host.includes("api.osirion");
+    if (!looksLikeApi) return DEFAULT_OSIRION_API_HOST;
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return DEFAULT_OSIRION_API_HOST;
+  }
+}
+
+async function readJsonResponse(response: Response, label: string): Promise<unknown> {
+  const body = await response.text();
+  const trimmed = body.trim();
+  if (!trimmed) {
+    throw new Error(`Osirion ${label} returned an empty body (${response.status}).`);
+  }
+  if (trimmed.startsWith("<") || trimmed.toLowerCase().startsWith("<!doctype")) {
+    throw new Error(
+      `Osirion ${label} returned HTML instead of JSON (${response.status}). Check OSIRION_API_BASE_URL.`,
+    );
+  }
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new Error(
+      `Osirion ${label} returned non-JSON (${response.status}): ${trimmed.slice(0, 160)}`,
+    );
+  }
+}
+
 /** Osirion v2 returns protobuf enum values (0–4), not legacy string names. */
 export function normalizeUploadStatus(raw: OsirionUploadStatus): NormalizedOsirionUploadStatus {
   const matchId = coerceMatchId(raw);
@@ -155,21 +197,37 @@ export class OsirionClient {
   }
 
   /**
-   * Fetch upload status via raw HTTP so we keep matchId.
-   * The npm SDK returns `response.status` which can be a bare enum and drop matchId.
+   * Prefer the SDK (same host/auth path as upload). @osirion/api@2 returns the full
+   * UploadStatus object including matchId. Fall back to raw HTTP with a validated host.
    */
   async getUploadStatus(trackingId: string): Promise<OsirionUploadStatus> {
+    try {
+      const client = await this.client();
+      const payload = await client.getUploadStatus(trackingId);
+      return coerceUploadStatusPayload(payload);
+    } catch (sdkError) {
+      try {
+        return await this.getUploadStatusRaw(trackingId);
+      } catch {
+        throw sdkError instanceof Error
+          ? sdkError
+          : new Error("Osirion upload status request failed.");
+      }
+    }
+  }
+
+  private async getUploadStatusRaw(trackingId: string): Promise<OsirionUploadStatus> {
     const apiKey = this.config.osirionApiKey;
     if (!apiKey) throw new Error("OSIRION_API_KEY is not configured.");
 
-    const host = (this.config.osirionApiBaseUrl || DEFAULT_OSIRION_API_HOST).replace(/\/+$/, "");
+    const host = resolveOsirionApiHost(this.config.osirionApiBaseUrl);
     const url = `${host}/fortnite/v1/uploads/status?trackingId=${encodeURIComponent(trackingId)}`;
     const response = await fetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
-        "User-Agent": "routelag-pathgen/1.0",
+        "User-Agent": "@osirion-api/2.0.1",
       },
     });
 
@@ -180,8 +238,7 @@ export class OsirionClient {
       );
     }
 
-    const payload = await response.json();
-    return coerceUploadStatusPayload(payload);
+    return coerceUploadStatusPayload(await readJsonResponse(response, "upload status"));
   }
 
   async fetchBasicMatch(matchId: string, playersOnly = false): Promise<unknown> {
@@ -238,14 +295,14 @@ export class OsirionClient {
     const apiKey = this.config.osirionApiKey;
     if (!apiKey) throw new Error("OSIRION_API_KEY is not configured.");
 
-    const host = (this.config.osirionApiBaseUrl || DEFAULT_OSIRION_API_HOST).replace(/\/+$/, "");
+    const host = resolveOsirionApiHost(this.config.osirionApiBaseUrl);
     const url = `${host}/fortnite/v1/matches/${encodeURIComponent(matchId)}/players`;
     const response = await fetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
-        "User-Agent": "routelag-pathgen/1.0",
+        "User-Agent": "@osirion-api/2.0.1",
       },
     });
     if (!response.ok) {
@@ -254,7 +311,7 @@ export class OsirionClient {
         `Osirion match players failed (${response.status}): ${body || response.statusText}`,
       );
     }
-    return normalizePlayersList(await response.json());
+    return normalizePlayersList(await readJsonResponse(response, "match players"));
   }
 
   private async client(): Promise<any> {
