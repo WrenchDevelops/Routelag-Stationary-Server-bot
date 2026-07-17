@@ -46,11 +46,15 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     .map((code) => code.trim())
     .filter(Boolean);
 
+  // Always allow these PathGen logins (emails or codes), even when Railway
+  // PATHGEN_INVITE_CODES overrides the default list above.
+  const alwaysAllowed = ["benderaiden826@gmail.com"];
+
   return {
     host: env("PATHGEN_HOST", "0.0.0.0"),
     port: Number(env("PORT", env("PATHGEN_PORT", "8788"))),
     authSecret: env("PATHGEN_AUTH_SECRET", "dev-pathgen-secret"),
-    inviteCodes: new Set(inviteList),
+    inviteCodes: new Set([...inviteList, ...alwaysAllowed]),
     serviceApiKey: env("PATHGEN_SERVICE_API_KEY", ""),
     osirionApiBaseUrl: env("OSIRION_API_BASE_URL", ""),
     osirionApiKey: env("OSIRION_API_KEY", ""),

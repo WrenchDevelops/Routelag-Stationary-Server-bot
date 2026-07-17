@@ -134,13 +134,14 @@ async function handleInviteLogin(
   store?: ReplayStore,
 ) {
   const inviteCode = (request.body.inviteCode ?? request.body.emailOrInvite ?? "").trim();
-  if (!config.inviteCodes.has(inviteCode)) {
+  if (!isInviteAllowed(inviteCode, config.inviteCodes)) {
     app.log.warn({ event: "pathgen_login_failure" }, "PathGen login failed");
     return reply.code(401).send({ error: "Invalid invite code" });
   }
-  const auth = createToken(inviteCode, config.authSecret);
+  const canonicalInvite = resolveInviteCode(inviteCode, config.inviteCodes);
+  const auth = createToken(canonicalInvite, config.authSecret);
   if (store) {
-    const moved = store.migrateInviteOwnership(inviteCode, auth.testerId);
+    const moved = store.migrateInviteOwnership(canonicalInvite, auth.testerId);
     if (moved > 0) {
       app.log.info(
         { event: "pathgen_identity_migrated", testerId: auth.testerId, moved },
@@ -150,8 +151,27 @@ async function handleInviteLogin(
     store.repairReplaySummaries(auth.testerId);
   }
   if (users?.enabled) {
-    void users.touchLogin(auth.testerId, inviteCode);
+    void users.touchLogin(auth.testerId, canonicalInvite);
   }
   app.log.info({ event: "pathgen_login_success", testerId: auth.testerId }, "PathGen login succeeded");
   return { token: auth.token, testerId: auth.testerId };
+}
+
+function isInviteAllowed(inviteCode: string, inviteCodes: Set<string>): boolean {
+  if (!inviteCode) return false;
+  if (inviteCodes.has(inviteCode)) return true;
+  const lower = inviteCode.toLowerCase();
+  for (const code of inviteCodes) {
+    if (code.toLowerCase() === lower) return true;
+  }
+  return false;
+}
+
+function resolveInviteCode(inviteCode: string, inviteCodes: Set<string>): string {
+  if (inviteCodes.has(inviteCode)) return inviteCode;
+  const lower = inviteCode.toLowerCase();
+  for (const code of inviteCodes) {
+    if (code.toLowerCase() === lower) return code;
+  }
+  return inviteCode;
 }
