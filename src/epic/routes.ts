@@ -42,10 +42,10 @@ function epicUnavailable(reply: {
   });
 }
 
-function firebaseUnavailable(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
+function cloudUnavailable(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
   return reply.code(503).send({
-    error: "Firebase is not configured on this PathGen server.",
-    code: "firebase_unavailable",
+    error: "Supabase is not configured on this PathGen server.",
+    code: "supabase_unavailable",
   });
 }
 
@@ -142,7 +142,7 @@ export async function registerEpicRoutes(
     const state = createEpicLinkStateValue();
     const expiresAt = epicLinkExpiresAt();
 
-    // Always store in memory first so this endpoint never hangs on Firestore/gRPC.
+    // Always store in memory first so this endpoint never hangs on cloud I/O.
     rememberEpicLinkState(state, tester.testerId, tester.inviteCode, expiresAt);
 
     if (users.enabled) {
@@ -157,7 +157,7 @@ export async function registerEpicRoutes(
           "epic oauth state persist",
         );
       } catch (error) {
-        app.log.warn({ err: error, testerId: tester.testerId }, "Epic OAuth Firestore persist skipped");
+        app.log.warn({ err: error, testerId: tester.testerId }, "Epic OAuth Supabase persist skipped");
       }
     }
 
@@ -231,7 +231,7 @@ export async function registerEpicRoutes(
           .code(503)
           .send(
             errorHtml(
-              "Cloud user sync is offline. Set FIREBASE_SERVICE_ACCOUNT_JSON on the PathGen Railway service, then redeploy.",
+              "Cloud user sync is offline. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on the PathGen Railway service, then redeploy.",
             ),
           );
       }
@@ -258,15 +258,15 @@ export async function registerEpicRoutes(
     } catch (err) {
       app.log.error({ err, testerId: pending.testerId }, "Epic OAuth callback failed");
       const raw = err instanceof Error ? err.message : "Authentication failed";
-      const message = /default credentials|Could not load the default credentials/i.test(raw)
-        ? "Firebase credentials are missing on PathGen. Set FIREBASE_SERVICE_ACCOUNT_JSON on Railway and redeploy."
+      const message = /supabase|not configured/i.test(raw)
+        ? "Supabase is not configured on PathGen. Set SUPABASE_SERVICE_ROLE_KEY on Railway and redeploy."
         : raw;
       return reply.type("text/html").code(500).send(errorHtml(message));
     }
   });
 
   app.delete("/api/epic/link", async (request, reply) => {
-    if (!users.enabled) return firebaseUnavailable(reply);
+    if (!users.enabled) return cloudUnavailable(reply);
     const tester = (request as AuthedRequest).tester;
     const user = await withTimeout(
       users.unlinkEpicAccount(tester.testerId, tester.inviteCode),
@@ -304,7 +304,7 @@ export async function registerEpicRoutes(
         configured,
       };
     } catch (error) {
-      app.log.warn({ err: error, testerId: tester.testerId }, "Epic status Firestore lookup failed");
+      app.log.warn({ err: error, testerId: tester.testerId }, "Epic status Supabase lookup failed");
       return {
         connected: false,
         epicAccountId: null,

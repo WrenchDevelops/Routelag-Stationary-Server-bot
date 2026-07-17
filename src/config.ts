@@ -21,10 +21,9 @@ export interface PathGenConfig {
   deepAnalyzeMonthlyLimit: number;
   deepAnalyzeDailyLimit: number;
   deepAnalyzeCooldownMs: number;
-  firebaseProjectId: string;
-  firebaseCredentialsPath: string;
-  firebaseCredentialsJson: string;
-  firebaseDisabled: boolean;
+  supabaseUrl: string;
+  supabaseServiceRoleKey: string;
+  supabaseDisabled: boolean;
   epicClientId: string;
   epicClientSecret: string;
   /** Must match a Redirect URL registered on the Epic client exactly. */
@@ -76,13 +75,9 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     deepAnalyzeMonthlyLimit: Number(env("DEEP_ANALYZE_MONTHLY_LIMIT", "10")),
     deepAnalyzeDailyLimit: Number(env("DEEP_ANALYZE_DAILY_LIMIT", "3")),
     deepAnalyzeCooldownMs: Number(env("DEEP_ANALYZE_COOLDOWN_MS", "120000")),
-    firebaseProjectId: env("FIREBASE_PROJECT_ID", "lunory-61a2a"),
-    firebaseCredentialsPath: env(
-      "GOOGLE_APPLICATION_CREDENTIALS",
-      env("FIREBASE_CREDENTIALS_PATH", "secrets/firebase-adminsdk.json"),
-    ),
-    firebaseCredentialsJson: env("FIREBASE_SERVICE_ACCOUNT_JSON"),
-    firebaseDisabled: env("FIREBASE_DISABLED", "false") === "true",
+    supabaseUrl: env("SUPABASE_URL", "https://adnlcbsvbdlqtjibddoj.supabase.co"),
+    supabaseServiceRoleKey: env("SUPABASE_SERVICE_ROLE_KEY"),
+    supabaseDisabled: env("SUPABASE_DISABLED", "false") === "true",
     epicClientId: env("EPIC_CLIENT_ID"),
     epicClientSecret: env("EPIC_CLIENT_SECRET"),
     // Zer0 must land on PathGen — not fortnitepathtopro (that site's state store is separate).

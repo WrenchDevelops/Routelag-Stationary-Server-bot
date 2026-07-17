@@ -8,23 +8,23 @@ interface AuthedRequest extends FastifyRequest {
   tester: TokenClaims;
 }
 
-function firebaseUnavailable(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
+function cloudUnavailable(reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
   return reply.code(503).send({
-    error: "Firebase is not configured on this PathGen server.",
-    code: "firebase_unavailable",
+    error: "Supabase is not configured on this PathGen server.",
+    code: "supabase_unavailable",
   });
 }
 
 export async function registerUserRoutes(app: FastifyInstance, users: UserStore): Promise<void> {
   app.get("/api/users/me", async (request, reply) => {
-    if (!users.enabled) return firebaseUnavailable(reply);
+    if (!users.enabled) return cloudUnavailable(reply);
     const tester = (request as AuthedRequest).tester;
     const user = (await users.getUser(tester.testerId)) ?? (await users.ensureUser(tester.testerId, tester.inviteCode));
     return { user };
   });
 
   app.put<{ Body: { profile?: Partial<CloudTesterProfile> } }>("/api/users/me/profile", async (request, reply) => {
-    if (!users.enabled) return firebaseUnavailable(reply);
+    if (!users.enabled) return cloudUnavailable(reply);
     const tester = (request as AuthedRequest).tester;
     const profile = request.body?.profile;
     if (!profile || typeof profile !== "object") {
@@ -37,7 +37,7 @@ export async function registerUserRoutes(app: FastifyInstance, users: UserStore)
   app.put<{ Body: { preferences?: Partial<CloudAppPreferences> } }>(
     "/api/users/me/preferences",
     async (request, reply) => {
-      if (!users.enabled) return firebaseUnavailable(reply);
+      if (!users.enabled) return cloudUnavailable(reply);
       const tester = (request as AuthedRequest).tester;
       const preferences = request.body?.preferences;
       if (!preferences || typeof preferences !== "object") {
@@ -49,7 +49,7 @@ export async function registerUserRoutes(app: FastifyInstance, users: UserStore)
   );
 
   app.get("/api/users/me/preferences", async (request, reply) => {
-    if (!users.enabled) return firebaseUnavailable(reply);
+    if (!users.enabled) return cloudUnavailable(reply);
     const tester = (request as AuthedRequest).tester;
     const user = (await users.getUser(tester.testerId)) ?? (await users.ensureUser(tester.testerId, tester.inviteCode));
     return { preferences: user.preferences };

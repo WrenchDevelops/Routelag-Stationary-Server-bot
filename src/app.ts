@@ -4,7 +4,7 @@ import rateLimit from "@fastify/rate-limit";
 
 import { createToken, secureEquals, verifyToken, type TokenClaims } from "./auth.js";
 import type { PathGenConfig } from "./config.js";
-import { initFirebase } from "./firebase.js";
+import { initSupabase } from "./supabase.js";
 import { registerReplayRoutes } from "./replays/routes.js";
 import { ReplayStore } from "./replays/replayStore.js";
 import { OsirionClient } from "./replays/osirionClient.js";
@@ -21,18 +21,17 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
   const app = Fastify({ logger: true });
   const store = new ReplayStore(config.replayDataFile);
   const osirion = new OsirionClient(config);
-  const firebase = initFirebase({
-    projectId: config.firebaseProjectId,
-    credentialsPath: config.firebaseCredentialsPath,
-    credentialsJson: config.firebaseCredentialsJson,
-    disabled: config.firebaseDisabled,
+  const supabase = initSupabase({
+    url: config.supabaseUrl,
+    serviceRoleKey: config.supabaseServiceRoleKey,
+    disabled: config.supabaseDisabled,
   });
-  const users = new UserStore(firebase);
+  const users = new UserStore(supabase);
 
-  if (firebase.enabled) {
-    app.log.info({ projectId: firebase.projectId }, "Firebase Admin initialized");
+  if (supabase.enabled) {
+    app.log.info({ url: supabase.url }, "Supabase client initialized");
   } else {
-    app.log.warn("Firebase Admin is disabled or not configured; cloud user sync is offline");
+    app.log.warn("Supabase is disabled or not configured; cloud user sync is offline");
   }
 
   await app.register(cors, { origin: true });
@@ -80,8 +79,8 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
     ok: true,
     service: "routelag-stationary-server",
     osirionConfigured: Boolean(config.osirionApiKey),
-    firebaseConfigured: users.enabled,
-    firebaseProjectId: firebase.projectId,
+    supabaseConfigured: users.enabled,
+    supabaseUrl: supabase.url,
     epicConfigured: Boolean(config.epicClientId && config.epicClientSecret && config.epicRedirectUri),
     // Railway injects these; useful to confirm which git SHA is live.
     gitSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RAILWAY_GIT_COMMIT_SHA_SHORT ?? null,

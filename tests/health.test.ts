@@ -10,7 +10,7 @@ test("health reports pathgen service", async () => {
     authSecret: "test-secret",
     inviteCodes: new Set(["TEST-CODE"]),
     osirionApiKey: "",
-    firebaseDisabled: true,
+    supabaseDisabled: true,
   });
   const app = await buildApp(config);
   await app.ready();
@@ -19,10 +19,10 @@ test("health reports pathgen service", async () => {
   const body = response.json<{
     ok: boolean;
     service: string;
-    firebaseConfigured: boolean;
+    supabaseConfigured: boolean;
   }>();
   assert.equal(body.ok, true);
   assert.equal(body.service, "routelag-stationary-server");
-  assert.equal(body.firebaseConfigured, false);
+  assert.equal(body.supabaseConfigured, false);
   await app.close();
 });

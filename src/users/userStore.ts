@@ -1,7 +1,4 @@
-import type { Firestore } from "firebase-admin/firestore";
-import { FieldValue } from "firebase-admin/firestore";
-
-import type { FirebaseRuntime } from "../firebase.js";
+import type { SupabaseRuntime } from "../supabase.js";
 import {
   defaultCloudPreferences,
   defaultCloudProfile,
@@ -10,7 +7,19 @@ import {
   type CloudUserDocument,
 } from "./types.js";
 
-const USERS_COLLECTION = "users";
+interface PathgenUserRow {
+  tester_id: string;
+  invite_code: string;
+  profile: unknown;
+  preferences: unknown;
+  epic_account_id: string | null;
+  epic_display_name: string | null;
+  epic_linked_at: string | null;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string;
+  deleted_at: string | null;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -26,85 +35,79 @@ function asPreferences(value: unknown): CloudAppPreferences {
   return { ...defaultCloudPreferences(), ...raw };
 }
 
-function normalizeUser(
-  testerId: string,
-  inviteCode: string,
-  data: Record<string, unknown> | undefined,
-): CloudUserDocument {
-  const createdAt = typeof data?.createdAt === "string" ? data.createdAt : nowIso();
-  const updatedAt = typeof data?.updatedAt === "string" ? data.updatedAt : createdAt;
-  const lastLoginAt = typeof data?.lastLoginAt === "string" ? data.lastLoginAt : createdAt;
+function rowToUser(row: PathgenUserRow, inviteFallback = ""): CloudUserDocument {
   return {
-    testerId,
-    inviteCode: typeof data?.inviteCode === "string" ? data.inviteCode : inviteCode,
-    profile: asProfile(data?.profile),
-    preferences: asPreferences(data?.preferences),
-    epicAccountId: typeof data?.epicAccountId === "string" ? data.epicAccountId : undefined,
-    epicDisplayName: typeof data?.epicDisplayName === "string" ? data.epicDisplayName : undefined,
-    epicLinkedAt: typeof data?.epicLinkedAt === "string" ? data.epicLinkedAt : undefined,
-    createdAt,
-    updatedAt,
-    lastLoginAt,
+    testerId: row.tester_id,
+    inviteCode: row.invite_code || inviteFallback,
+    profile: asProfile(row.profile),
+    preferences: asPreferences(row.preferences),
+    epicAccountId: row.epic_account_id ?? undefined,
+    epicDisplayName: row.epic_display_name ?? undefined,
+    epicLinkedAt: row.epic_linked_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastLoginAt: row.last_login_at,
   };
 }
 
 export class UserStore {
-  constructor(private readonly firebase: FirebaseRuntime) {}
+  constructor(private readonly supabase: SupabaseRuntime) {}
 
   get enabled(): boolean {
-    return Boolean(this.firebase.enabled && this.firebase.db);
+    return Boolean(this.supabase.enabled && this.supabase.client);
   }
 
-  private db(): Firestore {
-    if (!this.firebase.db) {
-      throw new Error("Firebase is not configured on this PathGen server.");
+  private client() {
+    if (!this.supabase.client) {
+      throw new Error("Supabase is not configured on this PathGen server.");
     }
-    return this.firebase.db;
-  }
-
-  private userRef(testerId: string) {
-    return this.db().collection(USERS_COLLECTION).doc(testerId);
+    return this.supabase.client;
   }
 
   async ensureUser(testerId: string, inviteCode: string): Promise<CloudUserDocument> {
-    const ref = this.userRef(testerId);
-    const snap = await ref.get();
+    const existing = await this.getUser(testerId);
     const stamp = nowIso();
-
-    if (!snap.exists) {
-      const doc: CloudUserDocument = {
-        testerId,
-        inviteCode,
-        profile: defaultCloudProfile(),
-        preferences: defaultCloudPreferences(),
-        createdAt: stamp,
-        updatedAt: stamp,
-        lastLoginAt: stamp,
-      };
-      await ref.set(doc);
-      return doc;
+    if (!existing) {
+      const { data, error } = await this.client()
+        .from("pathgen_users")
+        .insert({
+          tester_id: testerId,
+          invite_code: inviteCode,
+          profile: defaultCloudProfile(),
+          preferences: defaultCloudPreferences(),
+          created_at: stamp,
+          updated_at: stamp,
+          last_login_at: stamp,
+        })
+        .select("*")
+        .single();
+      if (error) throw new Error(`Supabase ensureUser insert failed: ${error.message}`);
+      return rowToUser(data as PathgenUserRow, inviteCode);
     }
 
-    await ref.set(
-      {
-        inviteCode,
-        lastLoginAt: stamp,
-        updatedAt: stamp,
-      },
-      { merge: true },
-    );
-    return normalizeUser(testerId, inviteCode, {
-      ...(snap.data() as Record<string, unknown> | undefined),
-      inviteCode,
-      lastLoginAt: stamp,
-      updatedAt: stamp,
-    });
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        invite_code: inviteCode || existing.inviteCode,
+        last_login_at: stamp,
+        updated_at: stamp,
+      })
+      .eq("tester_id", testerId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Supabase ensureUser update failed: ${error.message}`);
+    return rowToUser(data as PathgenUserRow, inviteCode);
   }
 
   async getUser(testerId: string): Promise<CloudUserDocument | null> {
-    const snap = await this.userRef(testerId).get();
-    if (!snap.exists) return null;
-    return normalizeUser(testerId, "", snap.data() as Record<string, unknown> | undefined);
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .select("*")
+      .eq("tester_id", testerId)
+      .maybeSingle();
+    if (error) throw new Error(`Supabase getUser failed: ${error.message}`);
+    if (!data) return null;
+    return rowToUser(data as PathgenUserRow);
   }
 
   async upsertProfile(
@@ -115,24 +118,18 @@ export class UserStore {
     const existing = (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode));
     const nextProfile = { ...existing.profile, ...profile };
     const stamp = nowIso();
-    await this.userRef(testerId).set(
-      {
-        testerId,
-        inviteCode: inviteCode || existing.inviteCode,
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        invite_code: inviteCode || existing.inviteCode,
         profile: nextProfile,
-        preferences: existing.preferences,
-        createdAt: existing.createdAt,
-        updatedAt: stamp,
-        lastLoginAt: existing.lastLoginAt,
-      },
-      { merge: true },
-    );
-    return {
-      ...existing,
-      inviteCode: inviteCode || existing.inviteCode,
-      profile: nextProfile,
-      updatedAt: stamp,
-    };
+        updated_at: stamp,
+      })
+      .eq("tester_id", testerId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Supabase upsertProfile failed: ${error.message}`);
+    return rowToUser(data as PathgenUserRow, inviteCode);
   }
 
   async upsertPreferences(
@@ -143,24 +140,18 @@ export class UserStore {
     const existing = (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode));
     const nextPreferences = { ...existing.preferences, ...preferences };
     const stamp = nowIso();
-    await this.userRef(testerId).set(
-      {
-        testerId,
-        inviteCode: inviteCode || existing.inviteCode,
-        profile: existing.profile,
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        invite_code: inviteCode || existing.inviteCode,
         preferences: nextPreferences,
-        createdAt: existing.createdAt,
-        updatedAt: stamp,
-        lastLoginAt: existing.lastLoginAt,
-      },
-      { merge: true },
-    );
-    return {
-      ...existing,
-      inviteCode: inviteCode || existing.inviteCode,
-      preferences: nextPreferences,
-      updatedAt: stamp,
-    };
+        updated_at: stamp,
+      })
+      .eq("tester_id", testerId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Supabase upsertPreferences failed: ${error.message}`);
+    return rowToUser(data as PathgenUserRow, inviteCode);
   }
 
   async touchLogin(testerId: string, inviteCode: string): Promise<void> {
@@ -168,7 +159,7 @@ export class UserStore {
     try {
       await this.ensureUser(testerId, inviteCode);
     } catch (error) {
-      console.warn("[Firebase] Failed to touch user login:", error);
+      console.warn("[Supabase] Failed to touch user login:", error);
     }
   }
 
@@ -177,91 +168,86 @@ export class UserStore {
     inviteCode: string,
     epic: { epicAccountId: string; epicDisplayName: string },
   ): Promise<CloudUserDocument> {
-    const existing = (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode));
+    await this.ensureUser(testerId, inviteCode);
     const stamp = nowIso();
-    await this.userRef(testerId).set(
-      {
-        testerId,
-        inviteCode: inviteCode || existing.inviteCode,
-        epicAccountId: epic.epicAccountId,
-        epicDisplayName: epic.epicDisplayName,
-        epicLinkedAt: stamp,
-        updatedAt: stamp,
-      },
-      { merge: true },
-    );
-    return {
-      ...existing,
-      inviteCode: inviteCode || existing.inviteCode,
-      epicAccountId: epic.epicAccountId,
-      epicDisplayName: epic.epicDisplayName,
-      epicLinkedAt: stamp,
-      updatedAt: stamp,
-    };
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        invite_code: inviteCode,
+        epic_account_id: epic.epicAccountId,
+        epic_display_name: epic.epicDisplayName,
+        epic_linked_at: stamp,
+        updated_at: stamp,
+      })
+      .eq("tester_id", testerId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Supabase linkEpicAccount failed: ${error.message}`);
+    return rowToUser(data as PathgenUserRow, inviteCode);
   }
 
   async unlinkEpicAccount(testerId: string, inviteCode: string): Promise<CloudUserDocument> {
-    const existing = (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode));
+    await this.ensureUser(testerId, inviteCode);
     const stamp = nowIso();
-    await this.userRef(testerId).set(
-      {
-        epicAccountId: FieldValue.delete(),
-        epicDisplayName: FieldValue.delete(),
-        epicLinkedAt: FieldValue.delete(),
-        updatedAt: stamp,
-      },
-      { merge: true },
-    );
-    return {
-      ...existing,
-      inviteCode: inviteCode || existing.inviteCode,
-      epicAccountId: undefined,
-      epicDisplayName: undefined,
-      epicLinkedAt: undefined,
-      updatedAt: stamp,
-    };
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        epic_account_id: null,
+        epic_display_name: null,
+        epic_linked_at: null,
+        updated_at: stamp,
+      })
+      .eq("tester_id", testerId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Supabase unlinkEpicAccount failed: ${error.message}`);
+    return rowToUser(data as PathgenUserRow, inviteCode);
   }
 
   async saveEpicOAuthState(
     state: string,
     payload: { testerId: string; inviteCode: string; expiresAt: number },
   ): Promise<void> {
-    await this.db()
-      .collection("pathgen_epic_oauth_states")
-      .doc(state)
-      .set({
-        testerId: payload.testerId,
-        inviteCode: payload.inviteCode,
-        expiresAt: payload.expiresAt,
-        createdAt: nowIso(),
-      });
+    const { error } = await this.client().from("pathgen_epic_oauth_states").upsert({
+      state,
+      tester_id: payload.testerId,
+      invite_code: payload.inviteCode,
+      expires_at: new Date(payload.expiresAt).toISOString(),
+      created_at: nowIso(),
+    });
+    if (error) throw new Error(`Supabase saveEpicOAuthState failed: ${error.message}`);
   }
 
   async consumeEpicOAuthState(
     state: string,
   ): Promise<{ testerId: string; inviteCode: string } | null> {
-    const ref = this.db().collection("pathgen_epic_oauth_states").doc(state);
-    const snap = await ref.get();
-    if (!snap.exists) return null;
-    const data = snap.data() as {
-      testerId?: string;
-      inviteCode?: string;
-      expiresAt?: number;
+    const { data, error } = await this.client()
+      .from("pathgen_epic_oauth_states")
+      .select("*")
+      .eq("state", state)
+      .maybeSingle();
+    if (error) throw new Error(`Supabase consumeEpicOAuthState failed: ${error.message}`);
+    if (!data) return null;
+
+    await this.client().from("pathgen_epic_oauth_states").delete().eq("state", state);
+
+    const expiresAt = Date.parse(String((data as { expires_at?: string }).expires_at ?? ""));
+    const testerId = String((data as { tester_id?: string }).tester_id ?? "");
+    if (!testerId || !Number.isFinite(expiresAt) || expiresAt < Date.now()) return null;
+    return {
+      testerId,
+      inviteCode: String((data as { invite_code?: string }).invite_code ?? ""),
     };
-    await ref.delete();
-    if (!data.testerId || typeof data.expiresAt !== "number") return null;
-    if (data.expiresAt < Date.now()) return null;
-    return { testerId: data.testerId, inviteCode: data.inviteCode ?? "" };
   }
 
-  /** Soft-delete helper for future account wipe flows. */
   async deleteUser(testerId: string): Promise<void> {
-    await this.userRef(testerId).set(
-      {
-        deletedAt: FieldValue.serverTimestamp(),
-        updatedAt: nowIso(),
-      },
-      { merge: true },
-    );
+    const { error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        deleted_at: nowIso(),
+        updated_at: nowIso(),
+      })
+      .eq("tester_id", testerId);
+    if (error) throw new Error(`Supabase deleteUser failed: ${error.message}`);
   }
 }
