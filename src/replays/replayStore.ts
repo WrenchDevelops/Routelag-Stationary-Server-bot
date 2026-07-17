@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { PathGenReplayDetail, ReplayJob, ReplayJobStatus } from "./types.js";
 import { buildDeepAnalyzeQuota, type DeepAnalyzeQuota } from "./quota.js";
 import type { PathGenConfig } from "../config.js";
+import type { CloudDataSync } from "../cloud/supabaseSync.js";
 import { backfillSummaryFromPlayer, normalizeTimestamp } from "./pathgenNormalizer.js";
 
 interface DeepAnalyzeUsage {
@@ -33,10 +34,27 @@ function currentDayKey(): string {
 
 export class ReplayStore {
   private readonly filePath: string;
+  private cloud: CloudDataSync | null = null;
 
   constructor(dataFile: string) {
     this.filePath = dataFile.endsWith(".json") ? dataFile : join(dirname(dataFile), "replays.json");
     mkdirSync(dirname(this.filePath), { recursive: true });
+  }
+
+  setCloudSync(cloud: CloudDataSync | null) {
+    this.cloud = cloud;
+  }
+
+  private syncJob(job: ReplayJob) {
+    void this.cloud?.upsertReplayJob(job).catch(() => undefined);
+  }
+
+  private syncReplay(replay: PathGenReplayDetail) {
+    void this.cloud?.upsertReplay(replay).catch(() => undefined);
+  }
+
+  private syncUsage(userId: string, usage: DeepAnalyzeUsage) {
+    void this.cloud?.upsertDeepAnalyzeUsage(userId, usage).catch(() => undefined);
   }
 
   listJobs(userId: string): ReplayJob[] {
@@ -102,6 +120,7 @@ export class ReplayStore {
     };
     db.jobs.push(job);
     this.write(db);
+    this.syncJob(job);
     return job;
   }
 
@@ -111,6 +130,7 @@ export class ReplayStore {
     if (!job) return null;
     Object.assign(job, patch, { updatedAt: new Date().toISOString() });
     this.write(db);
+    this.syncJob(job);
     return job;
   }
 
@@ -220,6 +240,7 @@ export class ReplayStore {
       db.replays.push(replay);
     }
     this.write(db);
+    this.syncReplay(replay);
     return replay;
   }
 
@@ -250,6 +271,7 @@ export class ReplayStore {
       lastDeepAnalyzeAt: new Date().toISOString(),
     };
     this.write(db);
+    this.syncUsage(userId, db.deepAnalyzeUsage[userId]!);
   }
 
   private read(): ReplayDb {

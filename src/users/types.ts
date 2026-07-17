@@ -26,13 +26,25 @@ export interface CloudAppPreferences {
   checkEngineOnLaunch: boolean;
   confirmCloseOptimized: boolean;
   reduceAnimations: boolean;
+  showBetaRoutes: boolean;
+  theme?: "light" | "dark";
+}
+
+export interface CloudConnections {
+  discord?: { connected: boolean; tag?: string; linkedAt?: string };
+  epic?: { connected: boolean; accountId?: string; displayName?: string; linkedAt?: string };
+  google?: { connected: boolean; email?: string };
 }
 
 export interface CloudUserDocument {
   testerId: string;
   inviteCode: string;
+  clerkUserId?: string;
+  clerkEmail?: string;
   profile: CloudTesterProfile;
   preferences: CloudAppPreferences;
+  connections?: CloudConnections;
+  billingSnapshot?: Record<string, unknown>;
   /** Epic Account Services account id (sub), when linked. */
   epicAccountId?: string;
   epicDisplayName?: string;
@@ -70,4 +82,6 @@ export const defaultCloudPreferences = (): CloudAppPreferences => ({
   checkEngineOnLaunch: true,
   confirmCloseOptimized: true,
   reduceAnimations: false,
+  showBetaRoutes: true,
+  theme: "light",
 });

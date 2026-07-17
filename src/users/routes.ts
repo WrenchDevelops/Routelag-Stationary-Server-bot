@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import type { TokenClaims } from "../auth.js";
 import type { UserStore } from "./userStore.js";
-import type { CloudAppPreferences, CloudTesterProfile } from "./types.js";
+import type { CloudAppPreferences, CloudConnections, CloudTesterProfile } from "./types.js";
 
 interface AuthedRequest extends FastifyRequest {
   tester: TokenClaims;
@@ -20,6 +20,26 @@ export async function registerUserRoutes(app: FastifyInstance, users: UserStore)
     if (!users.enabled) return cloudUnavailable(reply);
     const tester = (request as AuthedRequest).tester;
     const user = (await users.getUser(tester.testerId)) ?? (await users.ensureUser(tester.testerId, tester.inviteCode));
+    return { user };
+  });
+
+  app.put<{
+    Body: {
+      clerkUserId?: string;
+      clerkEmail?: string;
+      connections?: CloudConnections;
+      billingSnapshot?: Record<string, unknown>;
+    };
+  }>("/api/users/me/identity", async (request, reply) => {
+    if (!users.enabled) return cloudUnavailable(reply);
+    const tester = (request as AuthedRequest).tester;
+    const body = request.body ?? {};
+    const user = await users.upsertIdentity(tester.testerId, tester.inviteCode, {
+      clerkUserId: typeof body.clerkUserId === "string" ? body.clerkUserId : undefined,
+      clerkEmail: typeof body.clerkEmail === "string" ? body.clerkEmail : undefined,
+      connections: body.connections,
+      billingSnapshot: body.billingSnapshot,
+    });
     return { user };
   });
 

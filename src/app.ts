@@ -5,11 +5,13 @@ import rateLimit from "@fastify/rate-limit";
 import { createToken, secureEquals, verifyToken, type TokenClaims } from "./auth.js";
 import type { PathGenConfig } from "./config.js";
 import { initSupabase } from "./supabase.js";
+import { CloudDataSync } from "./cloud/supabaseSync.js";
 import { registerReplayRoutes } from "./replays/routes.js";
 import { ReplayStore } from "./replays/replayStore.js";
 import { OsirionClient } from "./replays/osirionClient.js";
 import { syncPendingJobs } from "./replays/sync.js";
 import { registerEpicRoutes } from "./epic/routes.js";
+import { registerRoutingHistoryRoutes } from "./routing/routes.js";
 import { registerUserRoutes } from "./users/routes.js";
 import { UserStore } from "./users/userStore.js";
 
@@ -27,6 +29,8 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
     disabled: config.supabaseDisabled,
   });
   const users = new UserStore(supabase);
+  const cloud = new CloudDataSync(supabase.client);
+  store.setCloudSync(cloud);
 
   if (supabase.enabled) {
     app.log.info({ url: supabase.url }, "Supabase client initialized");
@@ -115,6 +119,7 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
   await registerReplayRoutes(app, config, store);
   await registerUserRoutes(app, users);
   await registerEpicRoutes(app, config, users);
+  await registerRoutingHistoryRoutes(app, cloud);
 
   const pollMs = Math.max(config.replayPollIntervalMs, 15_000);
   const pollTimer = setInterval(() => {

@@ -3,6 +3,7 @@ import {
   defaultCloudPreferences,
   defaultCloudProfile,
   type CloudAppPreferences,
+  type CloudConnections,
   type CloudTesterProfile,
   type CloudUserDocument,
 } from "./types.js";
@@ -10,8 +11,12 @@ import {
 interface PathgenUserRow {
   tester_id: string;
   invite_code: string;
+  clerk_user_id: string | null;
+  clerk_email: string | null;
   profile: unknown;
   preferences: unknown;
+  connections: unknown;
+  billing_snapshot: unknown;
   epic_account_id: string | null;
   epic_display_name: string | null;
   epic_linked_at: string | null;
@@ -35,12 +40,24 @@ function asPreferences(value: unknown): CloudAppPreferences {
   return { ...defaultCloudPreferences(), ...raw };
 }
 
+function asConnections(value: unknown): CloudConnections {
+  return (value && typeof value === "object" ? value : {}) as CloudConnections;
+}
+
+function asBilling(value: unknown): Record<string, unknown> {
+  return (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+}
+
 function rowToUser(row: PathgenUserRow, inviteFallback = ""): CloudUserDocument {
   return {
     testerId: row.tester_id,
     inviteCode: row.invite_code || inviteFallback,
+    clerkUserId: row.clerk_user_id ?? undefined,
+    clerkEmail: row.clerk_email ?? undefined,
     profile: asProfile(row.profile),
     preferences: asPreferences(row.preferences),
+    connections: asConnections(row.connections),
+    billingSnapshot: asBilling(row.billing_snapshot),
     epicAccountId: row.epic_account_id ?? undefined,
     epicDisplayName: row.epic_display_name ?? undefined,
     epicLinkedAt: row.epic_linked_at ?? undefined,
@@ -57,6 +74,10 @@ export class UserStore {
     return Boolean(this.supabase.enabled && this.supabase.client);
   }
 
+  get clientOrNull() {
+    return this.supabase.client;
+  }
+
   private client() {
     if (!this.supabase.client) {
       throw new Error("Supabase is not configured on this PathGen server.");
@@ -64,7 +85,11 @@ export class UserStore {
     return this.supabase.client;
   }
 
-  async ensureUser(testerId: string, inviteCode: string): Promise<CloudUserDocument> {
+  async ensureUser(
+    testerId: string,
+    inviteCode: string,
+    identity?: { clerkUserId?: string; clerkEmail?: string },
+  ): Promise<CloudUserDocument> {
     const existing = await this.getUser(testerId);
     const stamp = nowIso();
     if (!existing) {
@@ -73,8 +98,12 @@ export class UserStore {
         .insert({
           tester_id: testerId,
           invite_code: inviteCode,
+          clerk_user_id: identity?.clerkUserId ?? null,
+          clerk_email: identity?.clerkEmail ?? null,
           profile: defaultCloudProfile(),
           preferences: defaultCloudPreferences(),
+          connections: {},
+          billing_snapshot: {},
           created_at: stamp,
           updated_at: stamp,
           last_login_at: stamp,
@@ -85,13 +114,17 @@ export class UserStore {
       return rowToUser(data as PathgenUserRow, inviteCode);
     }
 
+    const patch: Record<string, unknown> = {
+      invite_code: inviteCode || existing.inviteCode,
+      last_login_at: stamp,
+      updated_at: stamp,
+    };
+    if (identity?.clerkUserId) patch.clerk_user_id = identity.clerkUserId;
+    if (identity?.clerkEmail) patch.clerk_email = identity.clerkEmail;
+
     const { data, error } = await this.client()
       .from("pathgen_users")
-      .update({
-        invite_code: inviteCode || existing.inviteCode,
-        last_login_at: stamp,
-        updated_at: stamp,
-      })
+      .update(patch)
       .eq("tester_id", testerId)
       .select("*")
       .single();
@@ -106,6 +139,17 @@ export class UserStore {
       .eq("tester_id", testerId)
       .maybeSingle();
     if (error) throw new Error(`Supabase getUser failed: ${error.message}`);
+    if (!data) return null;
+    return rowToUser(data as PathgenUserRow);
+  }
+
+  async getUserByClerkId(clerkUserId: string): Promise<CloudUserDocument | null> {
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .select("*")
+      .eq("clerk_user_id", clerkUserId)
+      .maybeSingle();
+    if (error) throw new Error(`Supabase getUserByClerkId failed: ${error.message}`);
     if (!data) return null;
     return rowToUser(data as PathgenUserRow);
   }
@@ -154,6 +198,37 @@ export class UserStore {
     return rowToUser(data as PathgenUserRow, inviteCode);
   }
 
+  async upsertIdentity(
+    testerId: string,
+    inviteCode: string,
+    identity: {
+      clerkUserId?: string;
+      clerkEmail?: string;
+      connections?: CloudConnections;
+      billingSnapshot?: Record<string, unknown>;
+    },
+  ): Promise<CloudUserDocument> {
+    const existing = (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode, identity));
+    const stamp = nowIso();
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        clerk_user_id: identity.clerkUserId ?? existing.clerkUserId ?? null,
+        clerk_email: identity.clerkEmail ?? existing.clerkEmail ?? null,
+        connections: identity.connections
+          ? { ...(existing.connections ?? {}), ...identity.connections }
+          : (existing.connections ?? {}),
+        billing_snapshot: identity.billingSnapshot ?? existing.billingSnapshot ?? {},
+        updated_at: stamp,
+        last_login_at: stamp,
+      })
+      .eq("tester_id", testerId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Supabase upsertIdentity failed: ${error.message}`);
+    return rowToUser(data as PathgenUserRow, inviteCode);
+  }
+
   async touchLogin(testerId: string, inviteCode: string): Promise<void> {
     if (!this.enabled) return;
     try {
@@ -170,6 +245,16 @@ export class UserStore {
   ): Promise<CloudUserDocument> {
     await this.ensureUser(testerId, inviteCode);
     const stamp = nowIso();
+    const existing = await this.getUser(testerId);
+    const connections: CloudConnections = {
+      ...(existing?.connections ?? {}),
+      epic: {
+        connected: true,
+        accountId: epic.epicAccountId,
+        displayName: epic.epicDisplayName,
+        linkedAt: stamp,
+      },
+    };
     const { data, error } = await this.client()
       .from("pathgen_users")
       .update({
@@ -177,6 +262,7 @@ export class UserStore {
         epic_account_id: epic.epicAccountId,
         epic_display_name: epic.epicDisplayName,
         epic_linked_at: stamp,
+        connections,
         updated_at: stamp,
       })
       .eq("tester_id", testerId)
@@ -189,12 +275,18 @@ export class UserStore {
   async unlinkEpicAccount(testerId: string, inviteCode: string): Promise<CloudUserDocument> {
     await this.ensureUser(testerId, inviteCode);
     const stamp = nowIso();
+    const existing = await this.getUser(testerId);
+    const connections: CloudConnections = {
+      ...(existing?.connections ?? {}),
+      epic: { connected: false },
+    };
     const { data, error } = await this.client()
       .from("pathgen_users")
       .update({
         epic_account_id: null,
         epic_display_name: null,
         epic_linked_at: null,
+        connections,
         updated_at: stamp,
       })
       .eq("tester_id", testerId)
