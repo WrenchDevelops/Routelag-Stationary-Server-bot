@@ -20,6 +20,9 @@ interface PathgenUserRow {
   epic_account_id: string | null;
   epic_display_name: string | null;
   epic_linked_at: string | null;
+  discord_user_id: string | null;
+  discord_username: string | null;
+  discord_linked_at: string | null;
   created_at: string;
   updated_at: string;
   last_login_at: string;
@@ -61,6 +64,9 @@ function rowToUser(row: PathgenUserRow, inviteFallback = ""): CloudUserDocument 
     epicAccountId: row.epic_account_id ?? undefined,
     epicDisplayName: row.epic_display_name ?? undefined,
     epicLinkedAt: row.epic_linked_at ?? undefined,
+    discordUserId: row.discord_user_id ?? undefined,
+    discordUsername: row.discord_username ?? undefined,
+    discordLinkedAt: row.discord_linked_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastLoginAt: row.last_login_at,
@@ -296,6 +302,69 @@ export class UserStore {
     return rowToUser(data as PathgenUserRow, inviteCode);
   }
 
+  async linkDiscordAccount(
+    testerId: string,
+    inviteCode: string,
+    discord: { discordUserId: string; discordUsername: string },
+  ): Promise<CloudUserDocument> {
+    await this.ensureUser(testerId, inviteCode);
+    const stamp = nowIso();
+    const existing = await this.getUser(testerId);
+    const connections: CloudConnections = {
+      ...(existing?.connections ?? {}),
+      discord: {
+        connected: true,
+        userId: discord.discordUserId,
+        tag: discord.discordUsername,
+        username: discord.discordUsername,
+        linkedAt: stamp,
+      },
+    };
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        invite_code: inviteCode,
+        discord_user_id: discord.discordUserId,
+        discord_username: discord.discordUsername,
+        discord_linked_at: stamp,
+        connections,
+        profile: {
+          ...(existing?.profile ?? defaultCloudProfile()),
+          discord_username: discord.discordUsername,
+        },
+        updated_at: stamp,
+      })
+      .eq("tester_id", testerId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Supabase linkDiscordAccount failed: ${error.message}`);
+    return rowToUser(data as PathgenUserRow, inviteCode);
+  }
+
+  async unlinkDiscordAccount(testerId: string, inviteCode: string): Promise<CloudUserDocument> {
+    await this.ensureUser(testerId, inviteCode);
+    const stamp = nowIso();
+    const existing = await this.getUser(testerId);
+    const connections: CloudConnections = {
+      ...(existing?.connections ?? {}),
+      discord: { connected: false },
+    };
+    const { data, error } = await this.client()
+      .from("pathgen_users")
+      .update({
+        discord_user_id: null,
+        discord_username: null,
+        discord_linked_at: null,
+        connections,
+        updated_at: stamp,
+      })
+      .eq("tester_id", testerId)
+      .select("*")
+      .single();
+    if (error) throw new Error(`Supabase unlinkDiscordAccount failed: ${error.message}`);
+    return rowToUser(data as PathgenUserRow, inviteCode);
+  }
+
   async saveEpicOAuthState(
     state: string,
     payload: { testerId: string; inviteCode: string; expiresAt: number },
@@ -322,6 +391,42 @@ export class UserStore {
     if (!data) return null;
 
     await this.client().from("pathgen_epic_oauth_states").delete().eq("state", state);
+
+    const expiresAt = Date.parse(String((data as { expires_at?: string }).expires_at ?? ""));
+    const testerId = String((data as { tester_id?: string }).tester_id ?? "");
+    if (!testerId || !Number.isFinite(expiresAt) || expiresAt < Date.now()) return null;
+    return {
+      testerId,
+      inviteCode: String((data as { invite_code?: string }).invite_code ?? ""),
+    };
+  }
+
+  async saveDiscordOAuthState(
+    state: string,
+    payload: { testerId: string; inviteCode: string; expiresAt: number },
+  ): Promise<void> {
+    const { error } = await this.client().from("pathgen_discord_oauth_states").upsert({
+      state,
+      tester_id: payload.testerId,
+      invite_code: payload.inviteCode,
+      expires_at: new Date(payload.expiresAt).toISOString(),
+      created_at: nowIso(),
+    });
+    if (error) throw new Error(`Supabase saveDiscordOAuthState failed: ${error.message}`);
+  }
+
+  async consumeDiscordOAuthState(
+    state: string,
+  ): Promise<{ testerId: string; inviteCode: string } | null> {
+    const { data, error } = await this.client()
+      .from("pathgen_discord_oauth_states")
+      .select("*")
+      .eq("state", state)
+      .maybeSingle();
+    if (error) throw new Error(`Supabase consumeDiscordOAuthState failed: ${error.message}`);
+    if (!data) return null;
+
+    await this.client().from("pathgen_discord_oauth_states").delete().eq("state", state);
 
     const expiresAt = Date.parse(String((data as { expires_at?: string }).expires_at ?? ""));
     const testerId = String((data as { tester_id?: string }).tester_id ?? "");

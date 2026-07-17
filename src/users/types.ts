@@ -31,7 +31,13 @@ export interface CloudAppPreferences {
 }
 
 export interface CloudConnections {
-  discord?: { connected: boolean; tag?: string; linkedAt?: string };
+  discord?: {
+    connected: boolean;
+    userId?: string;
+    tag?: string;
+    username?: string;
+    linkedAt?: string;
+  };
   epic?: { connected: boolean; accountId?: string; displayName?: string; linkedAt?: string };
   google?: { connected: boolean; email?: string };
 }
@@ -49,6 +55,10 @@ export interface CloudUserDocument {
   epicAccountId?: string;
   epicDisplayName?: string;
   epicLinkedAt?: string;
+  /** Discord snowflake id when linked. */
+  discordUserId?: string;
+  discordUsername?: string;
+  discordLinkedAt?: string;
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string;

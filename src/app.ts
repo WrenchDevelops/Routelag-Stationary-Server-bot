@@ -11,6 +11,7 @@ import { ReplayStore } from "./replays/replayStore.js";
 import { OsirionClient } from "./replays/osirionClient.js";
 import { syncPendingJobs } from "./replays/sync.js";
 import { registerEpicRoutes } from "./epic/routes.js";
+import { registerDiscordRoutes } from "./discord/routes.js";
 import { registerRoutingHistoryRoutes } from "./routing/routes.js";
 import { registerUserRoutes } from "./users/routes.js";
 import { UserStore } from "./users/userStore.js";
@@ -47,8 +48,11 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
     if (request.url === "/health" || request.url.startsWith("/api/auth")) {
       return;
     }
-    // Epic OAuth browser callback (no PathGen JWT yet — state ties the link).
-    if (request.url.startsWith("/api/epic/callback")) {
+    // OAuth browser callbacks (no PathGen JWT yet — state ties the link).
+    if (
+      request.url.startsWith("/api/epic/callback") ||
+      request.url.startsWith("/api/discord/callback")
+    ) {
       return;
     }
     if (request.url.startsWith("/api/replays/osirion/webhook")) {
@@ -87,6 +91,9 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
     supabaseUrl: supabase.url,
     supabaseKeyRole: supabase.keyRole,
     epicConfigured: Boolean(config.epicClientId && config.epicClientSecret && config.epicRedirectUri),
+    discordConfigured: Boolean(
+      config.discordClientId && config.discordClientSecret && config.discordRedirectUri,
+    ),
     // Railway injects these; useful to confirm which git SHA is live.
     gitSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RAILWAY_GIT_COMMIT_SHA_SHORT ?? null,
     buildAt: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
@@ -122,6 +129,7 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
   await registerReplayRoutes(app, config, store);
   await registerUserRoutes(app, users);
   await registerEpicRoutes(app, config, users);
+  await registerDiscordRoutes(app, config, users);
   await registerRoutingHistoryRoutes(app, cloud);
 
   const pollMs = Math.max(config.replayPollIntervalMs, 15_000);

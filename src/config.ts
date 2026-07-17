@@ -28,6 +28,10 @@ export interface PathGenConfig {
   epicClientSecret: string;
   /** Must match a Redirect URL registered on the Epic client exactly. */
   epicRedirectUri: string;
+  discordClientId: string;
+  discordClientSecret: string;
+  /** Must match a Redirect URL registered on the Discord app exactly. */
+  discordRedirectUri: string;
 }
 
 function env(name: string, fallback = ""): string {
@@ -83,12 +87,18 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     // Zer0 must land on PathGen — not fortnitepathtopro (that site's state store is separate).
     // Register this exact Redirect URL on the Epic client.
     epicRedirectUri: resolveEpicRedirectUri(),
+    discordClientId: env("DISCORD_CLIENT_ID"),
+    discordClientSecret: env("DISCORD_CLIENT_SECRET"),
+    discordRedirectUri: resolveDiscordRedirectUri(),
     ...overrides,
   };
 }
 
 const PATHGEN_EPIC_CALLBACK =
   "https://routelag-stationary-server-bot-production.up.railway.app/api/epic/callback";
+
+const PATHGEN_DISCORD_CALLBACK =
+  "https://routelag-stationary-server-bot-production.up.railway.app/api/discord/callback";
 
 function resolveEpicRedirectUri(): string {
   const configured = env("EPIC_REDIRECT_URI", PATHGEN_EPIC_CALLBACK);
@@ -97,4 +107,8 @@ function resolveEpicRedirectUri(): string {
     return PATHGEN_EPIC_CALLBACK;
   }
   return configured;
+}
+
+function resolveDiscordRedirectUri(): string {
+  return env("DISCORD_REDIRECT_URI", PATHGEN_DISCORD_CALLBACK);
 }
