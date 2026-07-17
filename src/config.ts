@@ -85,11 +85,12 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     firebaseDisabled: env("FIREBASE_DISABLED", "false") === "true",
     epicClientId: env("EPIC_CLIENT_ID"),
     epicClientSecret: env("EPIC_CLIENT_SECRET"),
-    // Default matches the Redirect URL already registered on the Epic client.
-    // fortnitepathtopro.com forwards ?action=epic-callback to PathGen /api/epic/callback.
+    // Prefer PathGen's own callback (register this Redirect URL on the Epic client).
+    // fortnitepathtopro.com/api/discord-auth?action=epic-callback also works once it
+    // forwards unknown states to PathGen.
     epicRedirectUri: env(
       "EPIC_REDIRECT_URI",
-      "https://www.fortnitepathtopro.com/api/discord-auth?action=epic-callback",
+      "https://routelag-stationary-server-bot-production.up.railway.app/api/epic/callback",
     ),
     ...overrides,
   };
