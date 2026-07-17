@@ -4,10 +4,24 @@ import ws from "ws";
 export interface SupabaseRuntime {
   enabled: boolean;
   url: string | null;
+  /** JWT `role` claim from the configured key (`service_role` expected). */
+  keyRole: string | null;
   client: SupabaseClient | null;
 }
 
 let runtime: SupabaseRuntime | null = null;
+
+export function decodeSupabaseKeyRole(apiKey: string): string | null {
+  try {
+    const parts = apiKey.split(".");
+    if (parts.length < 2) return null;
+    const json = Buffer.from(parts[1], "base64url").toString("utf8");
+    const payload = JSON.parse(json) as { role?: unknown };
+    return typeof payload.role === "string" ? payload.role : null;
+  } catch {
+    return null;
+  }
+}
 
 export function initSupabase(options: {
   url?: string;
@@ -15,7 +29,7 @@ export function initSupabase(options: {
   disabled?: boolean;
 }): SupabaseRuntime {
   if (options.disabled) {
-    runtime = { enabled: false, url: null, client: null };
+    runtime = { enabled: false, url: null, keyRole: null, client: null };
     return runtime;
   }
 
@@ -28,8 +42,16 @@ export function initSupabase(options: {
     console.warn(
       "[Supabase] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY; cloud user sync is offline.",
     );
-    runtime = { enabled: false, url: url || null, client: null };
+    runtime = { enabled: false, url: url || null, keyRole: null, client: null };
     return runtime;
+  }
+
+  const keyRole = decodeSupabaseKeyRole(serviceRoleKey);
+  if (keyRole && keyRole !== "service_role") {
+    console.warn(
+      `[Supabase] SUPABASE_SERVICE_ROLE_KEY has role "${keyRole}" (expected service_role). ` +
+        "Replace it with the service_role secret from Supabase → Project Settings → API.",
+    );
   }
 
   try {
@@ -46,11 +68,11 @@ export function initSupabase(options: {
         transport: ws as any,
       },
     });
-    runtime = { enabled: true, url, client };
+    runtime = { enabled: true, url, keyRole, client };
     return runtime;
   } catch (error) {
     console.warn("[Supabase] Failed to initialize client:", error);
-    runtime = { enabled: false, url, client: null };
+    runtime = { enabled: false, url, keyRole, client: null };
     return runtime;
   }
 }

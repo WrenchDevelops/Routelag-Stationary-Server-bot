@@ -85,20 +85,20 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
     osirionConfigured: Boolean(config.osirionApiKey),
     supabaseConfigured: users.enabled,
     supabaseUrl: supabase.url,
+    supabaseKeyRole: supabase.keyRole,
     epicConfigured: Boolean(config.epicClientId && config.epicClientSecret && config.epicRedirectUri),
     // Railway injects these; useful to confirm which git SHA is live.
     gitSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RAILWAY_GIT_COMMIT_SHA_SHORT ?? null,
     buildAt: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
   }));
 
-  app.post<{ Body: { inviteCode?: string; code?: string; emailOrInvite?: string } }>(
-    "/api/auth/login",
-    async (request, reply) => handleInviteLogin(request, reply, config, app, users, store),
-  );
+  app.post<{
+    Body: { inviteCode?: string; code?: string; emailOrInvite?: string; clerkUserId?: string };
+  }>("/api/auth/login", async (request, reply) => handleInviteLogin(request, reply, config, app, users, store));
 
-  app.post<{ Body: { code?: string; inviteCode?: string; emailOrInvite?: string } }>(
-    "/api/beta/login",
-    async (request, reply) => {
+  app.post<{
+    Body: { code?: string; inviteCode?: string; emailOrInvite?: string; clerkUserId?: string };
+  }>("/api/beta/login", async (request, reply) => {
       const inviteCode = (
         request.body.code ??
         request.body.inviteCode ??
@@ -106,7 +106,10 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
         ""
       ).trim();
       return handleInviteLogin(
-        { ...request, body: { inviteCode } } as typeof request,
+        {
+          ...request,
+          body: { inviteCode, clerkUserId: request.body.clerkUserId },
+        } as typeof request,
         reply,
         config,
         app,
@@ -137,7 +140,9 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
 }
 
 async function handleInviteLogin(
-  request: FastifyRequest<{ Body: { inviteCode?: string; emailOrInvite?: string } }>,
+  request: FastifyRequest<{
+    Body: { inviteCode?: string; emailOrInvite?: string; clerkUserId?: string };
+  }>,
   reply: FastifyReply,
   config: PathGenConfig,
   app: FastifyInstance,
@@ -145,12 +150,16 @@ async function handleInviteLogin(
   store?: ReplayStore,
 ) {
   const inviteCode = (request.body.inviteCode ?? request.body.emailOrInvite ?? "").trim();
-  if (!isInviteAllowed(inviteCode, config.inviteCodes)) {
+  const clerkUserId =
+    typeof request.body.clerkUserId === "string" ? request.body.clerkUserId.trim() : "";
+  if (!isInviteAllowed(inviteCode, config.inviteCodes, clerkUserId)) {
     app.log.warn({ event: "pathgen_login_failure" }, "PathGen login failed");
     return reply.code(401).send({ error: "Invalid invite code" });
   }
-  const canonicalInvite = resolveInviteCode(inviteCode, config.inviteCodes);
-  const auth = createToken(canonicalInvite, config.authSecret);
+  const canonicalInvite = resolveInviteCode(inviteCode || clerkUserId, config.inviteCodes);
+  const auth = createToken(canonicalInvite, config.authSecret, {
+    clerkUserId: clerkUserId || undefined,
+  });
   if (store) {
     const moved = store.migrateInviteOwnership(canonicalInvite, auth.testerId);
     if (moved > 0) {
@@ -162,14 +171,35 @@ async function handleInviteLogin(
     store.repairReplaySummaries(auth.testerId);
   }
   if (users?.enabled) {
-    void users.touchLogin(auth.testerId, canonicalInvite);
+    void users
+      .ensureUser(auth.testerId, canonicalInvite, {
+        clerkUserId: clerkUserId || undefined,
+        clerkEmail: inviteCode.includes("@") ? inviteCode : undefined,
+      })
+      .catch((error) => {
+        app.log.warn({ err: error, testerId: auth.testerId }, "Supabase ensureUser on login failed");
+      });
   }
-  app.log.info({ event: "pathgen_login_success", testerId: auth.testerId }, "PathGen login succeeded");
+  app.log.info(
+    { event: "pathgen_login_success", testerId: auth.testerId, hasClerkId: Boolean(clerkUserId) },
+    "PathGen login succeeded",
+  );
   return { token: auth.token, testerId: auth.testerId };
 }
 
-function isInviteAllowed(inviteCode: string, inviteCodes: Set<string>): boolean {
+function isEmailIdentity(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function isInviteAllowed(
+  inviteCode: string,
+  inviteCodes: Set<string>,
+  clerkUserId = "",
+): boolean {
+  // Any signed-in Clerk user can bootstrap PathGen (Epic link + cloud sync).
+  if (clerkUserId.startsWith("user_")) return true;
   if (!inviteCode) return false;
+  if (isEmailIdentity(inviteCode)) return true;
   if (inviteCodes.has(inviteCode)) return true;
   const lower = inviteCode.toLowerCase();
   for (const code of inviteCodes) {

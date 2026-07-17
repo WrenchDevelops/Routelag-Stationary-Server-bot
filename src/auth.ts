@@ -14,8 +14,14 @@ function sign(data: string, secret: string): string {
   return createHmac("sha256", secret).update(data).digest("base64url");
 }
 
-export function createToken(inviteCode: string, secret: string): { token: string; testerId: string } {
-  const testerId = stableTesterId(inviteCode);
+export function createToken(
+  inviteCode: string,
+  secret: string,
+  options?: { clerkUserId?: string },
+): { token: string; testerId: string } {
+  const clerkUserId = options?.clerkUserId?.trim();
+  // Prefer Clerk identity so every signed-in Zer0 user gets a stable PathGen row.
+  const testerId = clerkUserId ? stableClerkTesterId(clerkUserId) : stableTesterId(inviteCode);
   const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const payload = b64url(
     JSON.stringify({
@@ -59,6 +65,14 @@ export function secureEquals(left: string, right: string): boolean {
 function stableTesterId(inviteCode: string): string {
   const digest = createHash("sha256")
     .update(inviteCode.trim().toUpperCase())
+    .digest("hex")
+    .slice(0, 24);
+  return `tester_${digest}`;
+}
+
+function stableClerkTesterId(clerkUserId: string): string {
+  const digest = createHash("sha256")
+    .update(`clerk:${clerkUserId.trim()}`)
     .digest("hex")
     .slice(0, 24);
   return `tester_${digest}`;

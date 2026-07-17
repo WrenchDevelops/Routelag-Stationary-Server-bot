@@ -258,8 +258,9 @@ export async function registerEpicRoutes(
     } catch (err) {
       app.log.error({ err, testerId: pending.testerId }, "Epic OAuth callback failed");
       const raw = err instanceof Error ? err.message : "Authentication failed";
-      const message = /supabase|not configured/i.test(raw)
-        ? "Supabase is not configured on PathGen. Set SUPABASE_SERVICE_ROLE_KEY on Railway and redeploy."
+      // Don't rewrite every Supabase write error as "not configured" — that hid RLS failures.
+      const message = /not configured on this PathGen server/i.test(raw)
+        ? "Cloud user sync is offline. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on Railway, then redeploy."
         : raw;
       return reply.type("text/html").code(500).send(errorHtml(message));
     }
