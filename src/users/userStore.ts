@@ -160,6 +160,56 @@ export class UserStore {
     return rowToUser(data as PathgenUserRow);
   }
 
+  async getUserByInviteOrEmail(inviteOrEmail: string): Promise<CloudUserDocument | null> {
+    const value = inviteOrEmail.trim();
+    if (!value) return null;
+    const { data: byInvite, error: inviteError } = await this.client()
+      .from("pathgen_users")
+      .select("*")
+      .eq("invite_code", value)
+      .maybeSingle();
+    if (inviteError) throw new Error(`Supabase getUserByInvite failed: ${inviteError.message}`);
+    if (byInvite) return rowToUser(byInvite as PathgenUserRow);
+
+    if (!value.includes("@")) return null;
+    const { data: byEmail, error: emailError } = await this.client()
+      .from("pathgen_users")
+      .select("*")
+      .ilike("clerk_email", value)
+      .maybeSingle();
+    if (emailError) throw new Error(`Supabase getUserByEmail failed: ${emailError.message}`);
+    if (!byEmail) return null;
+    return rowToUser(byEmail as PathgenUserRow);
+  }
+
+  /** Copy Epic/Discord link fields from a legacy row onto the canonical account. */
+  async mergeLinkedAccounts(fromTesterId: string, toTesterId: string): Promise<void> {
+    if (!fromTesterId || fromTesterId === toTesterId) return;
+    const from = await this.getUser(fromTesterId);
+    const to = await this.getUser(toTesterId);
+    if (!from || !to) return;
+
+    const stamp = nowIso();
+    const patch: Record<string, unknown> = { updated_at: stamp };
+    if (!to.epicAccountId && from.epicAccountId) {
+      patch.epic_account_id = from.epicAccountId;
+      patch.epic_display_name = from.epicDisplayName ?? null;
+      patch.epic_linked_at = from.epicLinkedAt ?? null;
+    }
+    if (!to.discordUserId && from.discordUserId) {
+      patch.discord_user_id = from.discordUserId;
+      patch.discord_username = from.discordUsername ?? null;
+      patch.discord_linked_at = from.discordLinkedAt ?? null;
+    }
+    if (Object.keys(patch).length <= 1) return;
+
+    const { error } = await this.client()
+      .from("pathgen_users")
+      .update(patch)
+      .eq("tester_id", toTesterId);
+    if (error) throw new Error(`Supabase mergeLinkedAccounts failed: ${error.message}`);
+  }
+
   async upsertProfile(
     testerId: string,
     inviteCode: string,

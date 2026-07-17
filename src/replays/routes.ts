@@ -34,8 +34,16 @@ export async function registerReplayRoutes(
     },
   });
 
+  async function prepareTester(tester: TokenClaims) {
+    store.rememberClerkIdentity(tester.testerId, tester.clerkUserId);
+    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+    await store.hydrateFromCloud(tester.testerId, tester.clerkUserId);
+    store.repairReplaySummaries(tester.testerId);
+  }
+
   app.post("/api/replays/upload", async (request, reply) => {
     const tester = (request as AuthedReplayRequest).tester;
+    await prepareTester(tester);
     const part = await request.file();
     if (!part) return reply.code(400).send({ error: "Replay file is required." });
 
@@ -113,6 +121,9 @@ export async function registerReplayRoutes(
           errorCode: "OSIRION_SUBMIT_FAILED",
           errorMessage: safeError(error),
         }) ?? job;
+    } finally {
+      // Keep only parsed JSON in Supabase — discard the uploaded .replay binary.
+      unlinkIfExists(savedPath);
     }
 
     return reply.code(201).send({ duplicate: false, job });
@@ -120,13 +131,13 @@ export async function registerReplayRoutes(
 
   app.get("/api/replays/quota", async (request) => {
     const tester = (request as AuthedReplayRequest).tester;
+    await prepareTester(tester);
     return store.getDeepAnalyzeQuota(tester.testerId, config);
   });
 
   app.get("/api/replays", async (request) => {
     const tester = (request as AuthedReplayRequest).tester;
-    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
-    store.repairReplaySummaries(tester.testerId);
+    await prepareTester(tester);
     return {
       replays: store.listReplays(tester.testerId).map((replay) => normalizeReplaySummary(replay.summary)),
     };
@@ -134,7 +145,7 @@ export async function registerReplayRoutes(
 
   app.get("/api/replays/jobs", async (request) => {
     const tester = (request as AuthedReplayRequest).tester;
-    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+    await prepareTester(tester);
     return { jobs: store.listJobs(tester.testerId) };
   });
 
@@ -142,7 +153,7 @@ export async function registerReplayRoutes(
     "/api/replays/jobs/:jobId",
     async (request, reply) => {
       const tester = (request as AuthedReplayRequest).tester;
-      store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+      await prepareTester(tester);
       let job = store.getJob(request.params.jobId, tester.testerId);
       if (!job) return reply.code(404).send({ error: "Replay job not found." });
       if (request.query.sync === "1") {
@@ -154,7 +165,7 @@ export async function registerReplayRoutes(
 
   app.post<{ Params: { jobId: string } }>("/api/replays/jobs/:jobId/retry", async (request, reply) => {
     const tester = (request as AuthedReplayRequest).tester;
-    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+    await prepareTester(tester);
     const job = store.getJob(request.params.jobId, tester.testerId);
     if (!job) return reply.code(404).send({ error: "Replay job not found." });
     if (!job.providerTrackingId) {
@@ -174,7 +185,7 @@ export async function registerReplayRoutes(
 
   app.get<{ Params: { replayId: string } }>("/api/replays/:replayId", async (request, reply) => {
     const tester = (request as AuthedReplayRequest).tester;
-    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+    await prepareTester(tester);
     const replay = store.getReplay(request.params.replayId, tester.testerId);
     if (!replay) return reply.code(404).send({ error: "Replay not found." });
     return { replay: publicReplay(replay) };
@@ -184,6 +195,7 @@ export async function registerReplayRoutes(
     "/api/replays/:replayId/deep-analyze",
     async (request, reply) => {
       const tester = (request as AuthedReplayRequest).tester;
+      await prepareTester(tester);
       try {
         const replay = await runDeepAnalyze(
           request.params.replayId,
@@ -209,6 +221,7 @@ export async function registerReplayRoutes(
 
   app.post<{ Params: { replayId: string } }>("/api/replays/:replayId/reparse", async (request, reply) => {
     const tester = (request as AuthedReplayRequest).tester;
+    await prepareTester(tester);
     const replay = store.getReplay(request.params.replayId, tester.testerId);
     if (!replay) return reply.code(404).send({ error: "Replay not found." });
     const job = store.getJob(replay.summary.jobId, tester.testerId);

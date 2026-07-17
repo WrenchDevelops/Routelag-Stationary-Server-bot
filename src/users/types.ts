@@ -93,5 +93,5 @@ export const defaultCloudPreferences = (): CloudAppPreferences => ({
   confirmCloseOptimized: true,
   reduceAnimations: false,
   showBetaRoutes: true,
-  theme: "light",
+  theme: "dark",
 });

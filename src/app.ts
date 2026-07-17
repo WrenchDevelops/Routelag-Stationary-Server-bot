@@ -80,6 +80,7 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
       await reply.code(401).send({ error: "Unauthorized" });
       return;
     }
+    store.rememberClerkIdentity(tester.testerId, tester.clerkUserId);
     (request as AuthedRequest).tester = tester;
   });
 
@@ -101,7 +102,9 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
 
   app.post<{
     Body: { inviteCode?: string; code?: string; emailOrInvite?: string; clerkUserId?: string };
-  }>("/api/auth/login", async (request, reply) => handleInviteLogin(request, reply, config, app, users, store));
+  }>("/api/auth/login", async (request, reply) =>
+    handleInviteLogin(request, reply, config, app, users, store, cloud),
+  );
 
   app.post<{
     Body: { code?: string; inviteCode?: string; emailOrInvite?: string; clerkUserId?: string };
@@ -122,6 +125,7 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
         app,
         users,
         store,
+        cloud,
       );
     },
   );
@@ -156,6 +160,7 @@ async function handleInviteLogin(
   app: FastifyInstance,
   users?: UserStore,
   store?: ReplayStore,
+  cloud?: CloudDataSync,
 ) {
   const inviteCode = (request.body.inviteCode ?? request.body.emailOrInvite ?? "").trim();
   const clerkUserId =
@@ -168,6 +173,34 @@ async function handleInviteLogin(
   const auth = createToken(canonicalInvite, config.authSecret, {
     clerkUserId: clerkUserId || undefined,
   });
+  store?.rememberClerkIdentity(auth.testerId, clerkUserId || undefined);
+
+  // Pull legacy email/invite ownership onto the Clerk-stable tester id so Epic + replays survive.
+  if (users?.enabled && clerkUserId) {
+    try {
+      const legacy =
+        (await users.getUserByInviteOrEmail(canonicalInvite)) ??
+        (inviteCode.includes("@") ? await users.getUserByInviteOrEmail(inviteCode) : null);
+      if (legacy && legacy.testerId !== auth.testerId) {
+        const movedCloud =
+          (await cloud?.migrateTesterOwnership(legacy.testerId, auth.testerId, clerkUserId)) ?? 0;
+        store?.migrateInviteOwnership(canonicalInvite, auth.testerId);
+        await users.mergeLinkedAccounts(legacy.testerId, auth.testerId);
+        app.log.info(
+          {
+            event: "pathgen_identity_merged",
+            fromTesterId: legacy.testerId,
+            toTesterId: auth.testerId,
+            movedCloud,
+          },
+          "Merged legacy PathGen account onto Clerk tester id",
+        );
+      }
+    } catch (error) {
+      app.log.warn({ err: error, testerId: auth.testerId }, "Legacy identity merge failed");
+    }
+  }
+
   if (store) {
     const moved = store.migrateInviteOwnership(canonicalInvite, auth.testerId);
     if (moved > 0) {
@@ -176,6 +209,7 @@ async function handleInviteLogin(
         "Migrated legacy replay ownership to stable tester id",
       );
     }
+    await store.hydrateFromCloud(auth.testerId, clerkUserId || undefined);
     store.repairReplaySummaries(auth.testerId);
   }
   if (users?.enabled) {

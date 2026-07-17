@@ -3,6 +3,7 @@ import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 export interface TokenClaims {
   testerId: string;
   inviteCode: string;
+  clerkUserId?: string;
   exp: number;
 }
 
@@ -27,6 +28,7 @@ export function createToken(
     JSON.stringify({
       testerId,
       inviteCode,
+      ...(clerkUserId ? { clerkUserId } : {}),
       exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 14,
     } satisfies TokenClaims),
   );

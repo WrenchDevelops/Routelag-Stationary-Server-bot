@@ -29,12 +29,16 @@ function currentMonthKey(): string {
 
 function currentDayKey(): string {
   const now = new Date();
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    now.getUTCDate(),
+  ).padStart(2, "0")}`;
 }
 
 export class ReplayStore {
   private readonly filePath: string;
   private cloud: CloudDataSync | null = null;
+  /** testerId -> clerkUserId for cloud dual-writes */
+  private readonly clerkByTester = new Map<string, string>();
 
   constructor(dataFile: string) {
     this.filePath = dataFile.endsWith(".json") ? dataFile : join(dirname(dataFile), "replays.json");
@@ -45,16 +49,86 @@ export class ReplayStore {
     this.cloud = cloud;
   }
 
+  rememberClerkIdentity(testerId: string, clerkUserId?: string | null) {
+    const id = clerkUserId?.trim();
+    if (!testerId || !id) return;
+    this.clerkByTester.set(testerId, id);
+  }
+
+  private clerkFor(userId: string): string | null {
+    return this.clerkByTester.get(userId) ?? null;
+  }
+
   private syncJob(job: ReplayJob) {
-    void this.cloud?.upsertReplayJob(job).catch(() => undefined);
+    void this.cloud?.upsertReplayJob(job, this.clerkFor(job.userId)).catch(() => undefined);
   }
 
   private syncReplay(replay: PathGenReplayDetail) {
-    void this.cloud?.upsertReplay(replay).catch(() => undefined);
+    void this.cloud
+      ?.upsertReplay(replay, this.clerkFor(replay.summary.userId))
+      .catch(() => undefined);
   }
 
   private syncUsage(userId: string, usage: DeepAnalyzeUsage) {
     void this.cloud?.upsertDeepAnalyzeUsage(userId, usage).catch(() => undefined);
+  }
+
+  /**
+   * Pull parsed jobs/replays from Supabase into the local cache so Railway
+   * redeploys never wipe the desktop library. Source of truth is cloud JSON.
+   */
+  async hydrateFromCloud(userId: string, clerkUserId?: string | null): Promise<number> {
+    if (!this.cloud?.enabled) return 0;
+    this.rememberClerkIdentity(userId, clerkUserId);
+
+    const [cloudJobs, cloudReplays] = await Promise.all([
+      this.cloud.listJobs(userId, clerkUserId),
+      this.cloud.listReplays(userId, clerkUserId),
+    ]);
+
+    if (cloudJobs.length === 0 && cloudReplays.length === 0) return 0;
+
+    const db = this.read();
+    let changed = 0;
+
+    for (const job of cloudJobs) {
+      const normalized: ReplayJob = { ...job, userId };
+      const idx = db.jobs.findIndex((item) => item.id === normalized.id);
+      if (idx < 0) {
+        db.jobs.push(normalized);
+        changed += 1;
+        continue;
+      }
+      const local = db.jobs[idx]!;
+      if (Date.parse(normalized.updatedAt) >= Date.parse(local.updatedAt)) {
+        db.jobs[idx] = { ...local, ...normalized, userId };
+        changed += 1;
+      }
+    }
+
+    for (const replay of cloudReplays) {
+      const normalized: PathGenReplayDetail = {
+        ...replay,
+        summary: { ...replay.summary, userId },
+      };
+      const idx = db.replays.findIndex((item) => item.summary.id === normalized.summary.id);
+      if (idx < 0) {
+        db.replays.push(normalized);
+        changed += 1;
+        continue;
+      }
+      const local = db.replays[idx]!;
+      const localTs = Date.parse(String(local.summary.parsedAt ?? local.summary.createdAt)) || 0;
+      const cloudTs =
+        Date.parse(String(normalized.summary.parsedAt ?? normalized.summary.createdAt)) || 0;
+      if (cloudTs >= localTs || !local.keyMoments?.length) {
+        db.replays[idx] = normalized;
+        changed += 1;
+      }
+    }
+
+    if (changed > 0) this.write(db);
+    return changed;
   }
 
   listJobs(userId: string): ReplayJob[] {
@@ -168,6 +242,7 @@ export class ReplayStore {
         job.userId = testerId;
         job.updatedAt = new Date().toISOString();
         moved += 1;
+        this.syncJob(job);
       }
       if (job.inviteCode === code || job.userId === testerId) {
         ownedJobIds.add(job.id);
@@ -182,6 +257,7 @@ export class ReplayStore {
       if (belongs && replay.summary.userId !== testerId) {
         replay.summary.userId = testerId;
         moved += 1;
+        this.syncReplay(replay);
       }
     }
 
@@ -192,6 +268,7 @@ export class ReplayStore {
         db.deepAnalyzeUsage[testerId] = legacy;
         delete db.deepAnalyzeUsage[legacyKey];
         moved += 1;
+        this.syncUsage(testerId, legacy);
       }
     }
 
@@ -225,7 +302,10 @@ export class ReplayStore {
         };
       }
       replay.summary = next;
-      if (JSON.stringify(replay.summary) !== before) repaired += 1;
+      if (JSON.stringify(replay.summary) !== before) {
+        repaired += 1;
+        this.syncReplay(replay);
+      }
     }
     if (repaired > 0) this.write(db);
     return repaired;
