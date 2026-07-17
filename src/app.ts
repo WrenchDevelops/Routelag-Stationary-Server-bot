@@ -4,10 +4,13 @@ import rateLimit from "@fastify/rate-limit";
 
 import { createToken, secureEquals, verifyToken, type TokenClaims } from "./auth.js";
 import type { PathGenConfig } from "./config.js";
+import { initFirebase } from "./firebase.js";
 import { registerReplayRoutes } from "./replays/routes.js";
 import { ReplayStore } from "./replays/replayStore.js";
 import { OsirionClient } from "./replays/osirionClient.js";
 import { syncPendingJobs } from "./replays/sync.js";
+import { registerUserRoutes } from "./users/routes.js";
+import { UserStore } from "./users/userStore.js";
 
 interface AuthedRequest extends FastifyRequest {
   tester: TokenClaims;
@@ -17,6 +20,19 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
   const app = Fastify({ logger: true });
   const store = new ReplayStore(config.replayDataFile);
   const osirion = new OsirionClient(config);
+  const firebase = initFirebase({
+    projectId: config.firebaseProjectId,
+    credentialsPath: config.firebaseCredentialsPath,
+    credentialsJson: config.firebaseCredentialsJson,
+    disabled: config.firebaseDisabled,
+  });
+  const users = new UserStore(firebase);
+
+  if (firebase.enabled) {
+    app.log.info({ projectId: firebase.projectId }, "Firebase Admin initialized");
+  } else {
+    app.log.warn("Firebase Admin is disabled or not configured; cloud user sync is offline");
+  }
 
   await app.register(cors, { origin: true });
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
@@ -59,11 +75,13 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
     ok: true,
     service: "routelag-stationary-server",
     osirionConfigured: Boolean(config.osirionApiKey),
+    firebaseConfigured: users.enabled,
+    firebaseProjectId: firebase.projectId,
   }));
 
   app.post<{ Body: { inviteCode?: string; code?: string; emailOrInvite?: string } }>(
     "/api/auth/login",
-    async (request, reply) => handleInviteLogin(request, reply, config, app),
+    async (request, reply) => handleInviteLogin(request, reply, config, app, users, store),
   );
 
   app.post<{ Body: { code?: string; inviteCode?: string; emailOrInvite?: string } }>(
@@ -80,13 +98,16 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
         reply,
         config,
         app,
+        users,
+        store,
       );
     },
   );
 
   await registerReplayRoutes(app, config, store);
+  await registerUserRoutes(app, users);
 
-  const pollMs = Math.max(config.replayPollIntervalMs, 60_000);
+  const pollMs = Math.max(config.replayPollIntervalMs, 15_000);
   const pollTimer = setInterval(() => {
     void syncPendingJobs(store, osirion, config).catch((error) => {
       app.log.warn({ err: error }, "Replay poll cycle failed");
@@ -106,6 +127,8 @@ async function handleInviteLogin(
   reply: FastifyReply,
   config: PathGenConfig,
   app: FastifyInstance,
+  users?: UserStore,
+  store?: ReplayStore,
 ) {
   const inviteCode = (request.body.inviteCode ?? request.body.emailOrInvite ?? "").trim();
   if (!config.inviteCodes.has(inviteCode)) {
@@ -113,6 +136,19 @@ async function handleInviteLogin(
     return reply.code(401).send({ error: "Invalid invite code" });
   }
   const auth = createToken(inviteCode, config.authSecret);
+  if (store) {
+    const moved = store.migrateInviteOwnership(inviteCode, auth.testerId);
+    if (moved > 0) {
+      app.log.info(
+        { event: "pathgen_identity_migrated", testerId: auth.testerId, moved },
+        "Migrated legacy replay ownership to stable tester id",
+      );
+    }
+    store.repairReplaySummaries(auth.testerId);
+  }
+  if (users?.enabled) {
+    void users.touchLogin(auth.testerId, inviteCode);
+  }
   app.log.info({ event: "pathgen_login_success", testerId: auth.testerId }, "PathGen login succeeded");
   return { token: auth.token, testerId: auth.testerId };
 }

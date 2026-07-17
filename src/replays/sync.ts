@@ -9,7 +9,7 @@ function safeError(error: unknown): string {
 }
 
 function pollIntervalMs(value: number | undefined): number {
-  return Math.max(value ?? 90_000, 60_000);
+  return Math.max(value ?? 90_000, 15_000);
 }
 
 function scheduleNextPoll(intervalMs: number, from = Date.now()): string {
@@ -21,13 +21,13 @@ function shouldPollOsirion(
   intervalMs: number,
   maxPolls: number,
   force = false,
-): boolean {
-  if (force) return true;
-  if (job.status === "fetching_match_data") return false;
-  if ((job.statusPollCount ?? 0) >= maxPolls) return false;
-  if (job.nextPollAt && Date.now() < new Date(job.nextPollAt).getTime()) return false;
-  if (!job.lastCheckedAt) return true;
-  return Date.now() - new Date(job.lastCheckedAt).getTime() >= intervalMs;
+): "poll" | "skip" | "timeout" {
+  if (force) return "poll";
+  if (job.status === "fetching_match_data") return "skip";
+  if ((job.statusPollCount ?? 0) >= maxPolls) return "timeout";
+  if (job.nextPollAt && Date.now() < new Date(job.nextPollAt).getTime()) return "skip";
+  if (!job.lastCheckedAt) return "poll";
+  return Date.now() - new Date(job.lastCheckedAt).getTime() >= intervalMs ? "poll" : "skip";
 }
 
 export async function syncReplayJob(
@@ -40,8 +40,18 @@ export async function syncReplayJob(
   if (!job.providerTrackingId || job.status === "parsed" || job.status === "failed") return job;
 
   const intervalMs = pollIntervalMs(config.replayPollIntervalMs);
-  if (!shouldPollOsirion(job, intervalMs, config.replayMaxStatusPolls, options?.force)) {
-    return job;
+  const decision = shouldPollOsirion(job, intervalMs, config.replayMaxStatusPolls, options?.force);
+  if (decision === "skip") return job;
+  if (decision === "timeout") {
+    return (
+      store.updateJob(job.id, {
+        status: "failed",
+        errorCode: "OSIRION_POLL_TIMEOUT",
+        errorMessage:
+          "Timed out waiting for Osirion to finish parsing. Use Retry Parse or re-upload the replay.",
+        lastCheckedAt: new Date().toISOString(),
+      }) ?? job
+    );
   }
 
   const pollCount = (job.statusPollCount ?? 0) + 1;
@@ -56,6 +66,7 @@ export async function syncReplayJob(
           fileName: job.fileName,
           fileHash: job.fileHash,
           createdAt: job.createdAt,
+          userId: job.userId,
         });
         store.saveReplay(replay);
         return (
@@ -66,6 +77,8 @@ export async function syncReplayJob(
             parsedAt: replay.summary.parsedAt ?? new Date().toISOString(),
             lastCheckedAt: new Date().toISOString(),
             statusPollCount: pollCount,
+            errorCode: undefined,
+            errorMessage: undefined,
           }) ?? job
         );
       }
@@ -77,7 +90,10 @@ export async function syncReplayJob(
           lastCheckedAt: new Date().toISOString(),
           statusPollCount: pollCount,
         }) ?? job;
-      const match = await osirion.fetchBasicMatch(status.matchId, config.basicParsePlayersOnly);
+      const match = await osirion.fetchBasicMatch(
+        status.matchId,
+        config.basicParsePlayersOnly,
+      );
       const replay = normalizeOsirionToPathGen({
         jobId: job.id,
         userId: job.userId,
@@ -92,6 +108,8 @@ export async function syncReplayJob(
           status: "parsed",
           replayId: replay.summary.id,
           parsedAt: replay.summary.parsedAt ?? new Date().toISOString(),
+          errorCode: undefined,
+          errorMessage: undefined,
         }) ?? nextJob;
       return nextJob;
     }
@@ -137,5 +155,5 @@ export async function syncPendingJobs(
 }
 
 export function initialNextPollAt(config: PathGenConfig, from = Date.now()): string {
-  return new Date(from + config.replayFirstPollDelayMs).toISOString();
+  return new Date(from + Math.max(config.replayFirstPollDelayMs, 5_000)).toISOString();
 }

@@ -123,32 +123,58 @@ export async function registerReplayRoutes(
     return store.getDeepAnalyzeQuota(tester.testerId, config);
   });
 
+  app.get("/api/replays", async (request) => {
+    const tester = (request as AuthedReplayRequest).tester;
+    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+    store.repairReplaySummaries(tester.testerId);
+    return {
+      replays: store.listReplays(tester.testerId).map((replay) => normalizeReplaySummary(replay.summary)),
+    };
+  });
+
   app.get("/api/replays/jobs", async (request) => {
     const tester = (request as AuthedReplayRequest).tester;
+    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
     return { jobs: store.listJobs(tester.testerId) };
   });
 
   app.get<{ Params: { jobId: string }; Querystring: { sync?: string } }>(
     "/api/replays/jobs/:jobId",
     async (request, reply) => {
-    const tester = (request as AuthedReplayRequest).tester;
-    let job = store.getJob(request.params.jobId, tester.testerId);
-    if (!job) return reply.code(404).send({ error: "Replay job not found." });
-    if (request.query.sync === "1") {
-      job = await syncReplayJob(job, store, osirion, config, { force: true });
-    }
-    return { job };
-  });
+      const tester = (request as AuthedReplayRequest).tester;
+      store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+      let job = store.getJob(request.params.jobId, tester.testerId);
+      if (!job) return reply.code(404).send({ error: "Replay job not found." });
+      if (request.query.sync === "1") {
+        job = await syncReplayJob(job, store, osirion, config, { force: true });
+      }
+      return { job };
+    },
+  );
 
-  app.get("/api/replays", async (request) => {
+  app.post<{ Params: { jobId: string } }>("/api/replays/jobs/:jobId/retry", async (request, reply) => {
     const tester = (request as AuthedReplayRequest).tester;
-    return {
-      replays: store.listReplays(tester.testerId).map((replay) => normalizeReplaySummary(replay.summary)),
-    };
+    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+    const job = store.getJob(request.params.jobId, tester.testerId);
+    if (!job) return reply.code(404).send({ error: "Replay job not found." });
+    if (!job.providerTrackingId) {
+      return reply.code(400).send({ error: "This job has no Osirion tracking id. Re-upload the replay." });
+    }
+    const reset =
+      store.updateJob(job.id, {
+        status: "osirion_pending",
+        errorCode: undefined,
+        errorMessage: undefined,
+        statusPollCount: 0,
+        nextPollAt: new Date().toISOString(),
+      }) ?? job;
+    const synced = await syncReplayJob(reset, store, osirion, config, { force: true });
+    return { job: synced };
   });
 
   app.get<{ Params: { replayId: string } }>("/api/replays/:replayId", async (request, reply) => {
     const tester = (request as AuthedReplayRequest).tester;
+    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
     const replay = store.getReplay(request.params.replayId, tester.testerId);
     if (!replay) return reply.code(404).send({ error: "Replay not found." });
     return { replay: publicReplay(replay) };
@@ -185,12 +211,20 @@ export async function registerReplayRoutes(
     const tester = (request as AuthedReplayRequest).tester;
     const replay = store.getReplay(request.params.replayId, tester.testerId);
     if (!replay) return reply.code(404).send({ error: "Replay not found." });
-    const job = store.updateJob(replay.summary.jobId, {
-      status: "osirion_pending",
-      errorCode: undefined,
-      errorMessage: undefined,
-    });
-    return { job: job ?? null };
+    const job = store.getJob(replay.summary.jobId, tester.testerId);
+    if (!job?.providerTrackingId) {
+      return reply.code(400).send({ error: "This replay has no Osirion tracking id. Re-upload the file." });
+    }
+    const reset =
+      store.updateJob(replay.summary.jobId, {
+        status: "osirion_pending",
+        errorCode: undefined,
+        errorMessage: undefined,
+        statusPollCount: 0,
+        nextPollAt: new Date().toISOString(),
+      }) ?? job;
+    const synced = await syncReplayJob(reset, store, osirion, config, { force: true });
+    return { job: synced };
   });
 
   app.post("/api/replays/osirion/webhook", async (request, reply) => {
@@ -199,7 +233,14 @@ export async function registerReplayRoutes(
     if (!secureEquals(header, config.osirionWebhookSecret)) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
-    return { ok: true };
+    // Kick pending jobs immediately so we don't wait for the poll timer.
+    const pending = store.listPendingJobs();
+    let synced = 0;
+    for (const job of pending) {
+      await syncReplayJob(job, store, osirion, config, { force: true });
+      synced += 1;
+    }
+    return { ok: true, synced };
   });
 }
 

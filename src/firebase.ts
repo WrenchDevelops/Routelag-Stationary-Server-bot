@@ -1,0 +1,117 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+import { applicationDefault, cert, getApps, initializeApp, type App } from "firebase-admin/app";
+import { getFirestore, type Firestore } from "firebase-admin/firestore";
+
+export interface FirebaseRuntime {
+  enabled: boolean;
+  projectId: string | null;
+  app: App | null;
+  db: Firestore | null;
+}
+
+let runtime: FirebaseRuntime | null = null;
+
+function resolveCredentialPath(configuredPath: string): string | null {
+  const candidates = [
+    configuredPath,
+    resolve(process.cwd(), configuredPath),
+    resolve(process.cwd(), "secrets/firebase-adminsdk.json"),
+    resolve(import.meta.dirname, "../secrets/firebase-adminsdk.json"),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+export function initFirebase(options: {
+  projectId?: string;
+  credentialsPath?: string;
+  credentialsJson?: string;
+  disabled?: boolean;
+}): FirebaseRuntime {
+  if (options.disabled) {
+    runtime = { enabled: false, projectId: null, app: null, db: null };
+    return runtime;
+  }
+
+  if (runtime?.enabled) return runtime;
+
+  if (getApps().length > 0) {
+    const app = getApps()[0]!;
+    runtime = {
+      enabled: true,
+      projectId: app.options.projectId ?? options.projectId ?? null,
+      app,
+      db: getFirestore(app),
+    };
+    return runtime;
+  }
+
+  try {
+    let app: App;
+    const projectId = options.projectId?.trim() || undefined;
+
+    if (options.credentialsJson?.trim()) {
+      const parsed = JSON.parse(options.credentialsJson) as {
+        project_id?: string;
+        client_email?: string;
+        private_key?: string;
+      };
+      app = initializeApp({
+        credential: cert({
+          projectId: parsed.project_id ?? projectId,
+          clientEmail: parsed.client_email,
+          privateKey: parsed.private_key,
+        }),
+        projectId: parsed.project_id ?? projectId,
+      });
+    } else {
+      const credentialPath = resolveCredentialPath(options.credentialsPath ?? "");
+      if (credentialPath) {
+        const raw = JSON.parse(readFileSync(credentialPath, "utf8")) as {
+          project_id?: string;
+        };
+        app = initializeApp({
+          credential: cert(credentialPath),
+          projectId: raw.project_id ?? projectId,
+        });
+      } else if (projectId) {
+        app = initializeApp({
+          credential: applicationDefault(),
+          projectId,
+        });
+      } else {
+        runtime = { enabled: false, projectId: null, app: null, db: null };
+        return runtime;
+      }
+    }
+
+    runtime = {
+      enabled: true,
+      projectId: app.options.projectId ?? projectId ?? null,
+      app,
+      db: getFirestore(app),
+    };
+    return runtime;
+  } catch (error) {
+    console.warn("[Firebase] Failed to initialize Admin SDK:", error);
+    runtime = { enabled: false, projectId: null, app: null, db: null };
+    return runtime;
+  }
+}
+
+export function getFirebase(): FirebaseRuntime {
+  if (!runtime) {
+    return initFirebase({});
+  }
+  return runtime;
+}
+
+/** Test helper — clears cached runtime between unit tests. */
+export function resetFirebaseForTests() {
+  runtime = null;
+}

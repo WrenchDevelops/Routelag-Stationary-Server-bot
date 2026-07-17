@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeUploadStatus } from "../src/replays/osirionClient.js";
+import {
+  coerceUploadStatusPayload,
+  normalizePlayersList,
+  normalizeUploadStatus,
+} from "../src/replays/osirionClient.js";
 
 test("numeric STATUS_COMPLETE is complete", () => {
   assert.deepEqual(normalizeUploadStatus({ status: 2, matchId: "abc" }), {
@@ -19,4 +23,38 @@ test("STATUS_FAILED is failed", () => {
 
 test("complete without match id stays pending", () => {
   assert.deepEqual(normalizeUploadStatus({ status: "STATUS_COMPLETE" }), { phase: "pending" });
+});
+
+test("coerceUploadStatusPayload handles bare enum from SDK", () => {
+  assert.deepEqual(coerceUploadStatusPayload(2), { status: 2 });
+  assert.equal(normalizeUploadStatus(coerceUploadStatusPayload(2)).phase, "pending");
+});
+
+test("coerceUploadStatusPayload unwraps nested status objects", () => {
+  const nested = coerceUploadStatusPayload({
+    data: { status: 2, matchId: "abc123" },
+  });
+  assert.equal(normalizeUploadStatus(nested).phase, "complete");
+});
+
+test("coerceUploadStatusPayload unwraps { status: UploadStatus } envelope", () => {
+  const wrapped = coerceUploadStatusPayload({
+    status: { status: 2, matchId: "match_xyz" },
+  });
+  assert.deepEqual(normalizeUploadStatus(wrapped), {
+    phase: "complete",
+    matchId: "match_xyz",
+  });
+});
+
+test("normalizePlayersList unwraps playerStatsWrappers", () => {
+  const players = normalizePlayersList({
+    playerStatsWrappers: [
+      { playerStats: { isReplayOwner: true, placement: 7, eliminations: 3 }, isHidden: false },
+      { playerStats: { placement: 12, eliminations: 0 }, isHidden: false },
+    ],
+  });
+  assert.equal(players.length, 2);
+  assert.equal(players[0]?.placement, 7);
+  assert.equal(players[0]?.isReplayOwner, true);
 });

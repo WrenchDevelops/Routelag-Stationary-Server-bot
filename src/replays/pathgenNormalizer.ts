@@ -1,4 +1,5 @@
-import type { PathGenKeyMoment, PathGenReplayDetail } from "./types.js";
+import { normalizePlayersList, pickReplayOwner } from "./osirionClient.js";
+import type { PathGenKeyMoment, PathGenReplayDetail, PathGenReplaySummary } from "./types.js";
 
 export function normalizeOsirionToPathGen(input: {
   jobId: string;
@@ -10,66 +11,35 @@ export function normalizeOsirionToPathGen(input: {
 }): PathGenReplayDetail {
   const { jobId, userId, fileName, fileHash, createdAt, match } = input;
   const info = match?.info ?? {};
-  const players = Array.isArray(match?.players) ? match.players : [];
-  const player =
-    players.find((item: any) => item?.isReplayOwner) ??
-    players.find((item: any) => item?.isSessionOwner) ??
-    players[0] ??
-    {};
+  const players = normalizePlayersList(match?.players);
+  const player = (pickReplayOwner(players) ?? {}) as Record<string, unknown>;
 
-  const shots = numberOrNull(player.shots ?? player.totalShots) ?? 0;
-  const hits = numberOrNull(player.hits ?? player.totalHits) ?? 0;
-  const replayId = String(info.matchId ?? info.id ?? `pathgen_${jobId}`);
+  const combat = extractCombatStats(player);
+  const replayId = String(info.matchId ?? info.id ?? player.matchId ?? `pathgen_${jobId}`);
   const parsedAt = new Date().toISOString();
+  const timeAliveSeconds = numberOrNull(
+    player.timeAlive ?? player.timeAliveSeconds ?? player.aliveTimeSeconds,
+  );
+  const duration =
+    durationSeconds(info) ??
+    (timeAliveSeconds != null ? Math.round(timeAliveSeconds) : null);
 
-  const summary = {
+  const summary: PathGenReplaySummary = {
     id: replayId,
     userId,
     jobId,
     fileName,
     fileHash,
-    status: "parsed" as const,
-    parseTier: "basic" as const,
-    deepParseStatus: "available" as const,
-    mode: stringOrNull(info.gameMode ?? info.mode),
-    playlist: stringOrNull(info.playlist ?? info.playlistName),
+    status: "parsed",
+    parseTier: "basic",
+    deepParseStatus: "available",
+    mode: stringOrNull(info.gameMode ?? info.mode ?? info.mnemonic ?? player.gameMode),
+    playlist: stringOrNull(info.playlist ?? info.playlistName ?? info.mnemonic),
     region: stringOrNull(player.matchmakingRegion ?? info.region),
-    startedAt: info.startTimestamp ?? info.startedAt ?? null,
-    durationSeconds: durationSeconds(info),
-    placement: numberOrNull(
-      player.placement ?? player.teamPlacement ?? player.rank ?? player.placementRank,
-    ),
-    eliminations: numberOrNull(
-      player.eliminations ?? player.kills ?? player.numKills ?? player.eliminationCount,
-    ),
-    assists: numberOrNull(player.assists ?? player.assistCount),
-    deaths: numberOrNull(player.deaths ?? player.deathCount),
-    headshots: numberOrNull(player.headshots ?? player.headshotCount),
-    damageDealt: numberOrNull(
-      player.damageToPlayers ??
-        player.damageDone ??
-        player.damage ??
-        player.totalDamage ??
-        player.damageDealt,
-    ),
-    damageTaken: numberOrNull(
-      player.damageTakenFromPlayers ??
-        player.damageTaken ??
-        player.damageReceived ??
-        player.totalDamageTaken,
-    ),
-    accuracy: shots > 0 ? Math.round((hits / shots) * 100) : null,
-    materialsFarmed:
-      (numberOrNull(player.woodFarmed) ?? 0) +
-      (numberOrNull(player.stoneFarmed) ?? 0) +
-      (numberOrNull(player.metalFarmed) ?? 0),
-    distanceTraveled:
-      (numberOrNull(player.distanceTraveledOnFoot) ?? 0) +
-      (numberOrNull(player.distanceTraveledInVehicle) ?? 0) +
-      (numberOrNull(player.distanceTraveledSkydiving) ?? 0),
-    timeAliveSeconds: numberOrNull(
-      player.timeAlive ?? player.timeAliveSeconds ?? player.aliveTimeSeconds,
-    ),
+    startedAt: normalizeTimestamp(info.startTimestamp ?? info.startedAt ?? player.startTimestamp),
+    durationSeconds: duration,
+    ...combat,
+    timeAliveSeconds: timeAliveSeconds != null ? Math.round(timeAliveSeconds) : null,
     thumbnailUrl: stringOrNull(info.thumbnailUrl),
     createdAt,
     parsedAt,
@@ -97,13 +67,13 @@ export function normalizeOsirionToPathGen(input: {
 
 export function cloneReplayForJob(
   source: PathGenReplayDetail,
-  input: { jobId: string; fileName: string; fileHash: string; createdAt: string },
+  input: { jobId: string; fileName: string; fileHash: string; createdAt: string; userId?: string },
 ): PathGenReplayDetail {
   const parsedAt = new Date().toISOString();
-  return {
-    ...source,
-    summary: {
+  const summary = backfillSummaryFromPlayer(
+    {
       ...source.summary,
+      ...(input.userId ? { userId: input.userId } : {}),
       jobId: input.jobId,
       fileName: input.fileName,
       fileHash: input.fileHash,
@@ -111,7 +81,15 @@ export function cloneReplayForJob(
       parsedAt,
       parseTier: source.summary.parseTier ?? "basic",
       deepParseStatus: source.summary.deepParseStatus ?? "available",
+      startedAt: normalizeTimestamp(source.summary.startedAt),
+      damageDealt: roundStat(source.summary.damageDealt ?? null),
+      damageTaken: roundStat(source.summary.damageTaken ?? null),
     },
+    source.player,
+  );
+  return {
+    ...source,
+    summary,
   };
 }
 
@@ -142,6 +120,28 @@ export function mergeDeepParseIntoReplay(
     timeline: flattenEvents(events),
     keyMoments: buildKeyMoments(events),
   };
+}
+
+/** Osirion timestamps are often microseconds since epoch. */
+export function normalizeTimestamp(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string" && value.trim()) {
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber) && value.trim() === String(asNumber)) {
+      return normalizeTimestamp(asNumber);
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+
+  // Microseconds (~1e15), milliseconds (~1e12), or seconds (~1e9).
+  let ms = value;
+  if (value > 1e14) ms = Math.round(value / 1000);
+  else if (value < 1e11) ms = Math.round(value * 1000);
+
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function buildKeyMoments(events: any): PathGenKeyMoment[] {
@@ -175,11 +175,19 @@ function buildKeyMoments(events: any): PathGenKeyMoment[] {
 
 function timestampSeconds(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
-  return value > 1_000_000_000_000 ? Math.round(value / 1000) : Math.round(value);
+  if (value > 1e14) return Math.round(value / 1_000_000);
+  if (value > 1e11) return Math.round(value / 1000);
+  return Math.round(value);
 }
 
 function durationSeconds(info: any): number | null {
   if (typeof info.lengthMs === "number") return Math.round(info.lengthMs / 1000);
+  const start = normalizeTimestamp(info.startTimestamp ?? info.startedAt);
+  const end = normalizeTimestamp(info.endTimestamp ?? info.endedAt);
+  if (start && end) {
+    const ms = new Date(end).getTime() - new Date(start).getTime();
+    if (Number.isFinite(ms) && ms > 0) return Math.round(ms / 1000);
+  }
   return numberOrNull(info.durationSeconds ?? info.duration);
 }
 
@@ -206,6 +214,108 @@ function normalizeKeyMoments(events: any): PathGenKeyMoment[] {
     }));
   }
   return [];
+}
+
+/** Pull combat / movement stats from a raw Osirion player object. */
+export function extractCombatStats(player: Record<string, unknown> | null | undefined): {
+  placement: number | null;
+  eliminations: number | null;
+  assists: number | null;
+  deaths: number | null;
+  headshots: number | null;
+  damageDealt: number | null;
+  damageTaken: number | null;
+  accuracy: number | null;
+  materialsFarmed: number | null;
+  distanceTraveled: number | null;
+} {
+  const p = player ?? {};
+  const shots = numberOrNull(p.shots ?? p.totalShots) ?? 0;
+  const hits = numberOrNull(p.hits ?? p.totalHits) ?? 0;
+  const wood = numberOrNull(p.woodFarmed);
+  const stone = numberOrNull(p.stoneFarmed);
+  const metal = numberOrNull(p.metalFarmed);
+  const materials =
+    wood == null && stone == null && metal == null
+      ? null
+      : (wood ?? 0) + (stone ?? 0) + (metal ?? 0);
+  const cm =
+    (numberOrNull(p.distanceTraveledOnFoot) ?? 0) +
+    (numberOrNull(p.distanceTraveledInVehicle) ?? 0) +
+    (numberOrNull(p.distanceTraveledSkydiving) ?? 0);
+
+  return {
+    placement: numberOrNull(p.placement ?? p.teamPlacement ?? p.rank ?? p.placementRank),
+    eliminations: numberOrNull(
+      p.eliminations ?? p.kills ?? p.numKills ?? p.eliminationCount ?? p.humanElims,
+    ),
+    assists: numberOrNull(p.assists ?? p.assistCount),
+    deaths: numberOrNull(p.deaths ?? p.deathCount),
+    headshots: numberOrNull(p.headshots ?? p.headshotCount),
+    damageDealt: roundStat(
+      numberOrNull(
+        p.damageToPlayers ??
+          p.damageDone ??
+          p.gameplaycueDamageToPlayers ??
+          p.damage ??
+          p.totalDamage ??
+          p.damageDealt,
+      ),
+    ),
+    damageTaken: roundStat(
+      numberOrNull(
+        p.damageTakenFromPlayers ??
+          p.damageTaken ??
+          p.damageReceived ??
+          p.totalDamageTaken,
+      ),
+    ),
+    accuracy: shots > 0 ? Math.round((hits / shots) * 100) : null,
+    materialsFarmed: materials,
+    distanceTraveled: cm > 0 ? roundStat(cm / 100) : null,
+  };
+}
+
+/** Backfill null summary combat fields from the stored raw player blob. */
+export function backfillSummaryFromPlayer(
+  summary: PathGenReplaySummary,
+  player: unknown,
+): PathGenReplaySummary {
+  const combat = extractCombatStats(
+    player && typeof player === "object" ? (player as Record<string, unknown>) : null,
+  );
+  return {
+    ...summary,
+    placement: summary.placement ?? combat.placement,
+    eliminations: summary.eliminations ?? combat.eliminations,
+    assists: summary.assists ?? combat.assists,
+    deaths: summary.deaths ?? combat.deaths,
+    headshots: summary.headshots ?? combat.headshots,
+    damageDealt: summary.damageDealt ?? combat.damageDealt,
+    damageTaken: summary.damageTaken ?? combat.damageTaken,
+    accuracy: summary.accuracy ?? combat.accuracy,
+    materialsFarmed: summary.materialsFarmed ?? combat.materialsFarmed,
+    distanceTraveled:
+      summary.distanceTraveled != null && summary.distanceTraveled > 0
+        ? normalizeDistanceMeters(summary.distanceTraveled, player)
+        : (combat.distanceTraveled ?? normalizeDistanceMeters(summary.distanceTraveled, player)),
+  };
+}
+
+function normalizeDistanceMeters(stored: number | null | undefined, player: unknown): number | null {
+  if (stored != null && stored > 0 && stored < 50_000) return roundStat(stored);
+  const p = (player && typeof player === "object" ? player : {}) as Record<string, unknown>;
+  const cm =
+    (numberOrNull(p.distanceTraveledOnFoot) ?? 0) +
+    (numberOrNull(p.distanceTraveledInVehicle) ?? 0) +
+    (numberOrNull(p.distanceTraveledSkydiving) ?? 0);
+  if (cm > 0) return roundStat(cm / 100);
+  return roundStat(stored ?? null);
+}
+
+function roundStat(value: number | null): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  return Math.round(value);
 }
 
 function numberOrNull(value: unknown): number | null {
