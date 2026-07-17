@@ -31,6 +31,23 @@ function resolveCredentialPath(configuredPath: string): string | null {
   return null;
 }
 
+function normalizePrivateKey(value: string | undefined): string | undefined {
+  if (!value) return value;
+  // Railway/env JSON often stores newlines as the two-char sequence \n.
+  return value.replace(/\\n/g, "\n");
+}
+
+function firestoreFor(app: App): Firestore {
+  const db = getFirestore(app);
+  try {
+    // gRPC can hang indefinitely on some Railway/container networks; REST is reliable.
+    db.settings({ preferRest: true, ignoreUndefinedProperties: true });
+  } catch {
+    // settings() throws if called after the first Firestore operation — ignore.
+  }
+  return db;
+}
+
 export function initFirebase(options: {
   projectId?: string;
   credentialsPath?: string;
@@ -50,7 +67,7 @@ export function initFirebase(options: {
       enabled: true,
       projectId: app.options.projectId ?? options.projectId ?? null,
       app,
-      db: getFirestore(app),
+      db: firestoreFor(app),
     };
     return runtime;
   }
@@ -69,7 +86,7 @@ export function initFirebase(options: {
         credential: cert({
           projectId: parsed.project_id ?? projectId,
           clientEmail: parsed.client_email,
-          privateKey: parsed.private_key,
+          privateKey: normalizePrivateKey(parsed.private_key),
         }),
         projectId: parsed.project_id ?? projectId,
       });
@@ -98,7 +115,7 @@ export function initFirebase(options: {
       enabled: true,
       projectId: app.options.projectId ?? projectId ?? null,
       app,
-      db: getFirestore(app),
+      db: firestoreFor(app),
     };
     return runtime;
   } catch (error) {

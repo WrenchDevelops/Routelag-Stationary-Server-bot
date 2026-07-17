@@ -31,9 +31,18 @@ export interface PendingEpicLink {
   testerId: string;
   inviteCode: string;
   createdAt: number;
+  expiresAt: number;
 }
 
 const PENDING_TTL_MS = 15 * 60 * 1000;
+const pendingLinks = new Map<string, PendingEpicLink>();
+
+function prunePending(): void {
+  const now = Date.now();
+  for (const [state, entry] of pendingLinks) {
+    if (entry.expiresAt < now) pendingLinks.delete(state);
+  }
+}
 
 export function createEpicLinkStateValue(): string {
   return randomBytes(24).toString("hex");
@@ -41,6 +50,29 @@ export function createEpicLinkStateValue(): string {
 
 export function epicLinkExpiresAt(now = Date.now()): number {
   return now + PENDING_TTL_MS;
+}
+
+/** Fast in-memory state so /api/epic/start never blocks on Firestore. */
+export function rememberEpicLinkState(
+  state: string,
+  testerId: string,
+  inviteCode: string,
+  expiresAt = epicLinkExpiresAt(),
+): void {
+  prunePending();
+  pendingLinks.set(state, {
+    testerId,
+    inviteCode,
+    createdAt: Date.now(),
+    expiresAt,
+  });
+}
+
+export function consumeMemoryEpicLinkState(state: string): PendingEpicLink | null {
+  prunePending();
+  const entry = pendingLinks.get(state) ?? null;
+  if (entry) pendingLinks.delete(state);
+  return entry;
 }
 
 export function buildEpicAuthorizeUrl(config: EpicOAuthConfig, state: string): string {
@@ -142,4 +174,18 @@ export function resolveEpicDisplayName(user: EpicUserInfo, token: EpicTokenRespo
 /** Stable fingerprint for logs — never log raw secrets or tokens. */
 export function fingerprintClientId(clientId: string): string {
   return createHash("sha256").update(clientId).digest("hex").slice(0, 8);
+}
+
+export async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

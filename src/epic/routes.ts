@@ -5,12 +5,15 @@ import type { PathGenConfig } from "../config.js";
 import type { UserStore } from "../users/userStore.js";
 import {
   buildEpicAuthorizeUrl,
+  consumeMemoryEpicLinkState,
   createEpicLinkStateValue,
   epicLinkExpiresAt,
   exchangeEpicAuthorizationCode,
   fetchEpicUserInfo,
   fingerprintClientId,
+  rememberEpicLinkState,
   resolveEpicDisplayName,
+  withTimeout,
   type EpicOAuthConfig,
 } from "./oauth.js";
 
@@ -134,15 +137,30 @@ export async function registerEpicRoutes(
   app.get("/api/epic/start", async (request, reply) => {
     const epic = epicConfigFrom(config);
     if (!epic) return epicUnavailable(reply);
-    if (!users.enabled) return firebaseUnavailable(reply);
 
     const tester = (request as AuthedRequest).tester;
     const state = createEpicLinkStateValue();
-    await users.saveEpicOAuthState(state, {
-      testerId: tester.testerId,
-      inviteCode: tester.inviteCode,
-      expiresAt: epicLinkExpiresAt(),
-    });
+    const expiresAt = epicLinkExpiresAt();
+
+    // Always store in memory first so this endpoint never hangs on Firestore/gRPC.
+    rememberEpicLinkState(state, tester.testerId, tester.inviteCode, expiresAt);
+
+    if (users.enabled) {
+      try {
+        await withTimeout(
+          users.saveEpicOAuthState(state, {
+            testerId: tester.testerId,
+            inviteCode: tester.inviteCode,
+            expiresAt,
+          }),
+          2500,
+          "epic oauth state persist",
+        );
+      } catch (error) {
+        app.log.warn({ err: error, testerId: tester.testerId }, "Epic OAuth Firestore persist skipped");
+      }
+    }
+
     const url = buildEpicAuthorizeUrl(epic, state);
 
     app.log.info(
@@ -164,9 +182,6 @@ export async function registerEpicRoutes(
     if (!epic) {
       return reply.type("text/html").code(503).send(errorHtml("Epic OAuth is not configured."));
     }
-    if (!users.enabled) {
-      return reply.type("text/html").code(503).send(errorHtml("Cloud user sync is offline."));
-    }
 
     const { code, state, error, error_description } = request.query;
     if (error) {
@@ -177,7 +192,14 @@ export async function registerEpicRoutes(
       return reply.type("text/html").code(400).send(errorHtml("Missing authorization code or state."));
     }
 
-    const pending = await users.consumeEpicOAuthState(state);
+    let pending =
+      consumeMemoryEpicLinkState(state) ??
+      (users.enabled
+        ? await withTimeout(users.consumeEpicOAuthState(state), 4000, "epic oauth state lookup").catch(
+            () => null,
+          )
+        : null);
+
     if (!pending) {
       return reply
         .type("text/html")
@@ -203,10 +225,21 @@ export async function registerEpicRoutes(
 
       if (!accountId) throw new Error("Could not resolve Epic account id");
 
-      const user = await users.linkEpicAccount(pending.testerId, pending.inviteCode, {
-        epicAccountId: accountId,
-        epicDisplayName: displayName,
-      });
+      if (!users.enabled) {
+        return reply
+          .type("text/html")
+          .code(503)
+          .send(errorHtml("Cloud user sync is offline; Epic account could not be saved."));
+      }
+
+      const user = await withTimeout(
+        users.linkEpicAccount(pending.testerId, pending.inviteCode, {
+          epicAccountId: accountId,
+          epicDisplayName: displayName,
+        }),
+        8000,
+        "epic account link",
+      );
 
       app.log.info(
         {
@@ -228,22 +261,50 @@ export async function registerEpicRoutes(
   app.delete("/api/epic/link", async (request, reply) => {
     if (!users.enabled) return firebaseUnavailable(reply);
     const tester = (request as AuthedRequest).tester;
-    const user = await users.unlinkEpicAccount(tester.testerId, tester.inviteCode);
+    const user = await withTimeout(
+      users.unlinkEpicAccount(tester.testerId, tester.inviteCode),
+      8000,
+      "epic unlink",
+    );
     return { user };
   });
 
   app.get("/api/epic/status", async (request, reply) => {
-    if (!users.enabled) return firebaseUnavailable(reply);
     const tester = (request as AuthedRequest).tester;
-    const user =
-      (await users.getUser(tester.testerId)) ??
-      (await users.ensureUser(tester.testerId, tester.inviteCode));
-    return {
-      connected: Boolean(user.epicAccountId),
-      epicAccountId: user.epicAccountId ?? null,
-      epicDisplayName: user.epicDisplayName ?? null,
-      epicLinkedAt: user.epicLinkedAt ?? null,
-      configured: Boolean(epicConfigFrom(config)),
-    };
+    const configured = Boolean(epicConfigFrom(config));
+    if (!users.enabled) {
+      return {
+        connected: false,
+        epicAccountId: null,
+        epicDisplayName: null,
+        epicLinkedAt: null,
+        configured,
+      };
+    }
+    try {
+      const user = await withTimeout(
+        (async () =>
+          (await users.getUser(tester.testerId)) ??
+          (await users.ensureUser(tester.testerId, tester.inviteCode)))(),
+        4000,
+        "epic status",
+      );
+      return {
+        connected: Boolean(user.epicAccountId),
+        epicAccountId: user.epicAccountId ?? null,
+        epicDisplayName: user.epicDisplayName ?? null,
+        epicLinkedAt: user.epicLinkedAt ?? null,
+        configured,
+      };
+    } catch (error) {
+      app.log.warn({ err: error, testerId: tester.testerId }, "Epic status Firestore lookup failed");
+      return {
+        connected: false,
+        epicAccountId: null,
+        epicDisplayName: null,
+        epicLinkedAt: null,
+        configured,
+      };
+    }
   });
 }
