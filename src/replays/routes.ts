@@ -37,7 +37,11 @@ export async function registerReplayRoutes(
   async function prepareTester(tester: TokenClaims) {
     store.rememberClerkIdentity(tester.testerId, tester.clerkUserId);
     store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
-    await store.hydrateFromCloud(tester.testerId, tester.clerkUserId);
+    try {
+      await store.hydrateFromCloud(tester.testerId, tester.clerkUserId);
+    } catch (error) {
+      console.warn("[PathGen] Cloud replay hydrate failed:", error);
+    }
     store.repairReplaySummaries(tester.testerId);
   }
 
