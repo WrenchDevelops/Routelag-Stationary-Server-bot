@@ -312,6 +312,7 @@ export class UserStore {
     epic: { epicAccountId: string; epicDisplayName: string },
   ): Promise<CloudUserDocument> {
     await this.ensureUser(testerId, inviteCode);
+    await this.releaseEpicAccountId(epic.epicAccountId, testerId);
     const stamp = nowIso();
     const existing = await this.getUser(testerId);
     const connections: CloudConnections = {
@@ -336,8 +337,52 @@ export class UserStore {
       .eq("tester_id", testerId)
       .select("*")
       .single();
-    if (error) throw new Error(`Supabase linkEpicAccount failed: ${error.message}`);
+    if (error) {
+      if (/duplicate|unique|epic_account_id/i.test(error.message)) {
+        throw new Error(
+          "This Epic account is already linked to another Zer0 account. Disconnect it there first, then try again.",
+        );
+      }
+      throw new Error(`Supabase linkEpicAccount failed: ${error.message}`);
+    }
     return rowToUser(data as PathgenUserRow, inviteCode);
+  }
+
+  private async releaseEpicAccountId(
+    epicAccountId: string,
+    keepTesterId: string,
+  ): Promise<void> {
+    const { data: holders, error: lookupError } = await this.client()
+      .from("pathgen_users")
+      .select("tester_id, connections")
+      .eq("epic_account_id", epicAccountId)
+      .neq("tester_id", keepTesterId);
+    if (lookupError) {
+      throw new Error(`Supabase releaseEpicAccountId lookup failed: ${lookupError.message}`);
+    }
+    if (!holders?.length) return;
+
+    const stamp = nowIso();
+    for (const holder of holders) {
+      const connections: CloudConnections = {
+        ...asConnections(holder.connections),
+        epic: { connected: false },
+      };
+      const { error } = await this.client()
+        .from("pathgen_users")
+        .update({
+          epic_account_id: null,
+          epic_display_name: null,
+          epic_linked_at: null,
+          connections,
+          updated_at: stamp,
+        })
+        .eq("tester_id", holder.tester_id)
+        .eq("epic_account_id", epicAccountId);
+      if (error) {
+        throw new Error(`Supabase releaseEpicAccountId failed: ${error.message}`);
+      }
+    }
   }
 
   async unlinkEpicAccount(testerId: string, inviteCode: string): Promise<CloudUserDocument> {
@@ -370,6 +415,9 @@ export class UserStore {
     discord: { discordUserId: string; discordUsername: string },
   ): Promise<CloudUserDocument> {
     await this.ensureUser(testerId, inviteCode);
+    // Unique constraint pathgen_users_discord_user_id_uidx — free the Discord ID
+    // from any other tester before attaching it to this one.
+    await this.releaseDiscordUserId(discord.discordUserId, testerId);
     const stamp = nowIso();
     const existing = await this.getUser(testerId);
     const connections: CloudConnections = {
@@ -399,8 +447,53 @@ export class UserStore {
       .eq("tester_id", testerId)
       .select("*")
       .single();
-    if (error) throw new Error(`Supabase linkDiscordAccount failed: ${error.message}`);
+    if (error) {
+      if (/duplicate|unique|pathgen_users_discord_user_id/i.test(error.message)) {
+        throw new Error(
+          "This Discord account is already linked to another Zer0 account. Disconnect it there first, then try again.",
+        );
+      }
+      throw new Error(`Supabase linkDiscordAccount failed: ${error.message}`);
+    }
     return rowToUser(data as PathgenUserRow, inviteCode);
+  }
+
+  /** Clear discord_* from every other pathgen_users row that owns this Discord ID. */
+  private async releaseDiscordUserId(
+    discordUserId: string,
+    keepTesterId: string,
+  ): Promise<void> {
+    const { data: holders, error: lookupError } = await this.client()
+      .from("pathgen_users")
+      .select("tester_id, connections")
+      .eq("discord_user_id", discordUserId)
+      .neq("tester_id", keepTesterId);
+    if (lookupError) {
+      throw new Error(`Supabase releaseDiscordUserId lookup failed: ${lookupError.message}`);
+    }
+    if (!holders?.length) return;
+
+    const stamp = nowIso();
+    for (const holder of holders) {
+      const connections: CloudConnections = {
+        ...asConnections(holder.connections),
+        discord: { connected: false },
+      };
+      const { error } = await this.client()
+        .from("pathgen_users")
+        .update({
+          discord_user_id: null,
+          discord_username: null,
+          discord_linked_at: null,
+          connections,
+          updated_at: stamp,
+        })
+        .eq("tester_id", holder.tester_id)
+        .eq("discord_user_id", discordUserId);
+      if (error) {
+        throw new Error(`Supabase releaseDiscordUserId failed: ${error.message}`);
+      }
+    }
   }
 
   async unlinkDiscordAccount(testerId: string, inviteCode: string): Promise<CloudUserDocument> {

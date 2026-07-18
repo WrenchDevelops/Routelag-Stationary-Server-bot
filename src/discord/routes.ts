@@ -246,7 +246,11 @@ export async function registerDiscordRoutes(
       const raw = err instanceof Error ? err.message : "Authentication failed";
       const message = /not configured on this PathGen server/i.test(raw)
         ? "Cloud user sync is offline. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on Railway, then redeploy."
-        : raw;
+        : /already linked to another Zer0 account|duplicate|unique|pathgen_users_discord_user_id/i.test(
+              raw,
+            )
+          ? "This Discord account is already linked to another Zer0 account. Disconnect it there first, then try again."
+          : raw;
       return reply.type("text/html").code(500).send(errorHtml(message));
     }
   });
