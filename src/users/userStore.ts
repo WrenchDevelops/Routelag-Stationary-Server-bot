@@ -51,6 +51,33 @@ function asBilling(value: unknown): Record<string, unknown> {
   return (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
 }
 
+/** Keep connections JSON aligned with the authoritative OAuth columns. */
+function reconcileConnections(row: PathgenUserRow): CloudConnections {
+  const base = asConnections(row.connections);
+  if (row.discord_user_id) {
+    base.discord = {
+      connected: true,
+      userId: row.discord_user_id,
+      tag: row.discord_username ?? base.discord?.tag ?? base.discord?.username,
+      username: row.discord_username ?? base.discord?.username ?? base.discord?.tag,
+      linkedAt: row.discord_linked_at ?? base.discord?.linkedAt,
+    };
+  } else {
+    base.discord = { connected: false };
+  }
+  if (row.epic_account_id) {
+    base.epic = {
+      connected: true,
+      accountId: row.epic_account_id,
+      displayName: row.epic_display_name ?? base.epic?.displayName,
+      linkedAt: row.epic_linked_at ?? base.epic?.linkedAt,
+    };
+  } else {
+    base.epic = { connected: false };
+  }
+  return base;
+}
+
 function rowToUser(row: PathgenUserRow, inviteFallback = ""): CloudUserDocument {
   return {
     testerId: row.tester_id,
@@ -59,7 +86,7 @@ function rowToUser(row: PathgenUserRow, inviteFallback = ""): CloudUserDocument 
     clerkEmail: row.clerk_email ?? undefined,
     profile: asProfile(row.profile),
     preferences: asPreferences(row.preferences),
-    connections: asConnections(row.connections),
+    connections: reconcileConnections(row),
     billingSnapshot: asBilling(row.billing_snapshot),
     epicAccountId: row.epic_account_id ?? undefined,
     epicDisplayName: row.epic_display_name ?? undefined,
@@ -198,23 +225,45 @@ export class UserStore {
   async mergeLinkedAccounts(fromTesterId: string, toTesterId: string): Promise<void> {
     if (!fromTesterId || fromTesterId === toTesterId) return;
     const from = await this.getUser(fromTesterId);
-    const to = await this.getUser(toTesterId);
-    if (!from || !to) return;
+    if (!from) return;
+    // Ensure the destination row exists before copying OAuth links onto it.
+    const to =
+      (await this.getUser(toTesterId)) ??
+      (await this.ensureUser(toTesterId, from.inviteCode || "clerk", {
+        clerkUserId: from.clerkUserId,
+        clerkEmail: from.clerkEmail,
+      }));
 
     const stamp = nowIso();
     const patch: Record<string, unknown> = { updated_at: stamp };
+    const nextConnections: CloudConnections = { ...(to.connections ?? {}) };
+
     if (!to.epicAccountId && from.epicAccountId) {
       patch.epic_account_id = from.epicAccountId;
       patch.epic_display_name = from.epicDisplayName ?? null;
       patch.epic_linked_at = from.epicLinkedAt ?? null;
+      nextConnections.epic = {
+        connected: true,
+        accountId: from.epicAccountId,
+        displayName: from.epicDisplayName,
+        linkedAt: from.epicLinkedAt,
+      };
     }
     if (!to.discordUserId && from.discordUserId) {
       patch.discord_user_id = from.discordUserId;
       patch.discord_username = from.discordUsername ?? null;
       patch.discord_linked_at = from.discordLinkedAt ?? null;
+      nextConnections.discord = {
+        connected: true,
+        userId: from.discordUserId,
+        tag: from.discordUsername,
+        username: from.discordUsername,
+        linkedAt: from.discordLinkedAt,
+      };
     }
     if (Object.keys(patch).length <= 1) return;
 
+    patch.connections = nextConnections;
     const { error } = await this.client()
       .from("pathgen_users")
       .update(patch)
@@ -276,16 +325,46 @@ export class UserStore {
       billingSnapshot?: Record<string, unknown>;
     },
   ): Promise<CloudUserDocument> {
-    const existing = (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode, identity));
+    const existing =
+      (await this.getUser(testerId)) ?? (await this.ensureUser(testerId, inviteCode, identity));
     const stamp = nowIso();
+
+    // Client identity sync may patch google (and similar), but Discord/Epic are
+    // server-owned via OAuth columns and must not be wiped by a partial payload.
+    const nextConnections: CloudConnections = {
+      ...(existing.connections ?? {}),
+    };
+    if (identity.connections?.google) {
+      nextConnections.google = identity.connections.google;
+    }
+    if (existing.discordUserId) {
+      nextConnections.discord = {
+        connected: true,
+        userId: existing.discordUserId,
+        tag: existing.discordUsername,
+        username: existing.discordUsername,
+        linkedAt: existing.discordLinkedAt,
+      };
+    } else if (!nextConnections.discord) {
+      nextConnections.discord = { connected: false };
+    }
+    if (existing.epicAccountId) {
+      nextConnections.epic = {
+        connected: true,
+        accountId: existing.epicAccountId,
+        displayName: existing.epicDisplayName,
+        linkedAt: existing.epicLinkedAt,
+      };
+    } else if (!nextConnections.epic) {
+      nextConnections.epic = { connected: false };
+    }
+
     const { data, error } = await this.client()
       .from("pathgen_users")
       .update({
         clerk_user_id: identity.clerkUserId ?? existing.clerkUserId ?? null,
         clerk_email: identity.clerkEmail ?? existing.clerkEmail ?? null,
-        connections: identity.connections
-          ? { ...(existing.connections ?? {}), ...identity.connections }
-          : (existing.connections ?? {}),
+        connections: nextConnections,
         billing_snapshot: identity.billingSnapshot ?? existing.billingSnapshot ?? {},
         updated_at: stamp,
         last_login_at: stamp,

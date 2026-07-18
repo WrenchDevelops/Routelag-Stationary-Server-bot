@@ -257,6 +257,20 @@ async function handleLogin(
   });
   store?.rememberClerkIdentity(auth.testerId, clerkIdentity?.clerkUserId);
 
+  // Create/update the canonical Supabase user row first so connected-account
+  // merges and later OAuth links always have a destination row to write to.
+  if (users?.enabled) {
+    try {
+      await users.ensureUser(auth.testerId, canonicalInvite, {
+        clerkUserId: clerkIdentity?.clerkUserId,
+        // Email only from verified Clerk claims — never from the request body.
+        clerkEmail: clerkIdentity?.email,
+      });
+    } catch (error) {
+      app.log.warn({ err: error, testerId: auth.testerId }, "Supabase ensureUser on login failed");
+    }
+  }
+
   // Safe migration: invite-code ownership only (allowlisted shared secret).
   // Never merge accounts based solely on an unverified client-provided email.
   if (users?.enabled && clerkIdentity && inviteCode && isInviteAllowed(inviteCode, config.inviteCodes)) {
@@ -312,17 +326,6 @@ async function handleLogin(
     }
     await store.hydrateFromCloud(auth.testerId, clerkIdentity?.clerkUserId);
     store.repairReplaySummaries(auth.testerId);
-  }
-  if (users?.enabled) {
-    void users
-      .ensureUser(auth.testerId, canonicalInvite, {
-        clerkUserId: clerkIdentity?.clerkUserId,
-        // Email only from verified Clerk claims — never from the request body.
-        clerkEmail: clerkIdentity?.email,
-      })
-      .catch((error) => {
-        app.log.warn({ err: error, testerId: auth.testerId }, "Supabase ensureUser on login failed");
-      });
   }
   app.log.info(
     {

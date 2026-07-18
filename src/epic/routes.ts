@@ -261,7 +261,9 @@ export async function registerEpicRoutes(
       // Don't rewrite every Supabase write error as "not configured" — that hid RLS failures.
       const message = /not configured on this PathGen server/i.test(raw)
         ? "Cloud user sync is offline. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on Railway, then redeploy."
-        : raw;
+        : /already linked to another Zer0 account|duplicate|unique|epic_account_id/i.test(raw)
+          ? "This Epic account is already linked to another Zer0 account. Disconnect it there first, then try again."
+          : raw;
       return reply.type("text/html").code(500).send(errorHtml(message));
     }
   });
