@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { buildApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 
-test("health reports pathgen service", async () => {
+test("health reports minimal public pathgen status", async () => {
   const config = loadConfig({
     port: 0,
     authSecret: "test-secret",
@@ -16,13 +16,26 @@ test("health reports pathgen service", async () => {
   await app.ready();
   const response = await app.inject({ method: "GET", url: "/health" });
   assert.equal(response.statusCode, 200);
-  const body = response.json<{
-    ok: boolean;
-    service: string;
-    supabaseConfigured: boolean;
-  }>();
+  const body = response.json<Record<string, unknown>>();
   assert.equal(body.ok, true);
-  assert.equal(body.service, "routelag-stationary-server");
-  assert.equal(body.supabaseConfigured, false);
+  assert.equal(body.service, "pathgen");
+  assert.equal(typeof body.version, "string");
+  assert.ok(String(body.version).length > 0);
+  // Must not leak infrastructure or privileged config.
+  for (const key of [
+    "supabaseUrl",
+    "supabaseKeyRole",
+    "supabaseConfigured",
+    "osirionConfigured",
+    "epicConfigured",
+    "discordConfigured",
+    "clerkConfigured",
+    "allowInviteLogin",
+    "requireClerkSubject",
+    "gitSha",
+    "buildAt",
+  ]) {
+    assert.equal(body[key], undefined, `health must not expose ${key}`);
+  }
   await app.close();
 });

@@ -1,12 +1,35 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
+import {
+  issuerFromPublishableKey,
+  jwksUrlForIssuer,
+  type ClerkSessionVerifier,
+} from "./clerkAuth.js";
+import { DEFAULT_PATHGEN_TOKEN_TTL_SEC } from "./auth.js";
+
 export interface PathGenConfig {
   host: string;
   port: number;
   authSecret: string;
   inviteCodes: Set<string>;
   serviceApiKey: string;
+  /** Production-like deployments must verify Clerk; invite login is blocked. */
+  isProduction: boolean;
+  /**
+   * Dev/test only: allow invite-code PathGen tokens without a Clerk session.
+   * Always false when isProduction is true.
+   */
+  allowInviteLogin: boolean;
+  /** Reject PathGen JWTs that lack a verified clerkUserId claim (production default). */
+  requireClerkSubject: boolean;
+  clerkIssuer: string;
+  clerkJwksUrl: string;
+  clerkAudiences: string[];
+  clerkAuthorizedParties: string[];
+  pathgenTokenTtlSec: number;
+  /** Test injection — never set from env in production. */
+  clerkSessionVerifier?: ClerkSessionVerifier;
   osirionApiBaseUrl: string;
   osirionApiKey: string;
   osirionWebhookSecret: string;
@@ -53,16 +76,48 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     .map((code) => code.trim())
     .filter(Boolean);
 
-  // Always allow these PathGen logins (emails or codes), even when Railway
-  // PATHGEN_INVITE_CODES overrides the default list above.
+  // Invite allowlist only (shared secrets). Emails are NOT identity keys.
+  // Keep founder invite for explicit invite-login / migration linkage only.
   const alwaysAllowed = ["benderaiden826@gmail.com"];
 
-  return {
+  const nodeEnv = env("NODE_ENV", "development").toLowerCase();
+  const pathgenEnv = env("PATHGEN_ENV", nodeEnv).toLowerCase();
+  const isProduction =
+    overrides.isProduction ??
+    (nodeEnv === "production" || pathgenEnv === "production" || env("RAILWAY_ENVIRONMENT") === "production");
+
+  const publishableKey = env("CLERK_PUBLISHABLE_KEY", env("VITE_CLERK_PUBLISHABLE_KEY"));
+  const derivedIssuer = publishableKey ? issuerFromPublishableKey(publishableKey) : null;
+  const clerkIssuer = env("CLERK_ISSUER", derivedIssuer ?? "");
+  const clerkJwksUrl = env("CLERK_JWKS_URL", clerkIssuer ? jwksUrlForIssuer(clerkIssuer) : "");
+  const clerkAudiences = env("CLERK_AUDIENCES")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const clerkAuthorizedParties = env("CLERK_AUTHORIZED_PARTIES")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  const allowInviteLoginRaw = env("PATHGEN_ALLOW_INVITE_LOGIN", isProduction ? "false" : "true") === "true";
+  const allowInviteLoginEnv = isProduction ? false : allowInviteLoginRaw;
+  const requireClerkSubjectEnv =
+    env("PATHGEN_REQUIRE_CLERK_SUBJECT", isProduction ? "true" : "false") === "true";
+
+  const merged: PathGenConfig = {
     host: env("PATHGEN_HOST", "0.0.0.0"),
     port: Number(env("PORT", env("PATHGEN_PORT", "8788"))),
     authSecret: env("PATHGEN_AUTH_SECRET", "dev-pathgen-secret"),
     inviteCodes: new Set([...inviteList, ...alwaysAllowed]),
     serviceApiKey: env("PATHGEN_SERVICE_API_KEY", ""),
+    isProduction,
+    allowInviteLogin: allowInviteLoginEnv,
+    requireClerkSubject: requireClerkSubjectEnv,
+    clerkIssuer,
+    clerkJwksUrl,
+    clerkAudiences,
+    clerkAuthorizedParties,
+    pathgenTokenTtlSec: Number(env("PATHGEN_TOKEN_TTL_SEC", String(DEFAULT_PATHGEN_TOKEN_TTL_SEC))),
     osirionApiBaseUrl: env("OSIRION_API_BASE_URL", ""),
     osirionApiKey: env("OSIRION_API_KEY", ""),
     osirionWebhookSecret: env("OSIRION_WEBHOOK_SECRET", ""),
@@ -92,6 +147,15 @@ export function loadConfig(overrides: Partial<PathGenConfig> = {}): PathGenConfi
     discordRedirectUri: resolveDiscordRedirectUri(),
     ...overrides,
   };
+
+  // Production hard-locks — cannot be re-enabled via overrides.
+  merged.isProduction = isProduction;
+  merged.allowInviteLogin = isProduction ? false : (overrides.allowInviteLogin ?? allowInviteLoginEnv);
+  merged.requireClerkSubject = isProduction
+    ? true
+    : (overrides.requireClerkSubject ?? requireClerkSubjectEnv);
+
+  return merged;
 }
 
 const PATHGEN_EPIC_CALLBACK =

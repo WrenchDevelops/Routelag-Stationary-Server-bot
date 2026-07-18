@@ -20,6 +20,7 @@
     "@osirion/api": "^2.0.1",
     "@supabase/supabase-js": "^2.110.7",
     "fastify": "^5.4.0",
+    "jose": "^5.10.0",
     "ws": "^8.21.1"
   },
   "devDependencies": {

@@ -30,11 +30,19 @@ Default: `http://127.0.0.1:8788`
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Service health |
-| `POST /api/auth/login` | Beta invite login |
+| `POST /api/auth/login` | Clerk session exchange (or dev invite login) |
 | `POST /api/replays/upload` | Upload `.replay` file |
 | `GET /api/replays/jobs` | List parse jobs |
 | `GET /api/replays/jobs/:id` | Job status (polls Osirion) |
 | `GET /api/replays` | Parsed replay summaries |
 | `GET /api/replays/:id` | Full parsed replay |
+| `DELETE /api/replays/:id` | Delete owned replay |
+
+### Authentication
+
+Production PathGen login requires a **verified Clerk session JWT** (`Authorization: Bearer <clerk_jwt>`
+or body `clerkSessionToken`). Client-supplied `clerkUserId` / email are **ignored** as identity.
+
+See `docs/PATHGEN_IDENTITY_MIGRATION.md` in the monorepo for migration notes.
 
 Discord bot code will live in `src/discord/`.

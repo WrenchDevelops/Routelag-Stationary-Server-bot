@@ -220,6 +220,21 @@ export class ReplayStore {
     );
   }
 
+  /** Ownership-scoped delete — returns false when the replay is missing or not owned. */
+  deleteReplay(replayId: string, userId: string): boolean {
+    const db = this.read();
+    const index = db.replays.findIndex(
+      (replay) => replay.summary.id === replayId && replay.summary.userId === userId,
+    );
+    if (index < 0) return false;
+    const [removed] = db.replays.splice(index, 1);
+    db.jobs = db.jobs.filter(
+      (job) => !(job.id === removed?.summary.jobId && job.userId === userId),
+    );
+    this.write(db);
+    return true;
+  }
+
   /**
    * Re-attach jobs/replays created under older random tester IDs to the stable
    * invite-derived testerId so the desktop library is not empty after re-login.

@@ -34,9 +34,9 @@ export async function registerUserRoutes(app: FastifyInstance, users: UserStore)
     if (!users.enabled) return cloudUnavailable(reply);
     const tester = (request as AuthedRequest).tester;
     const body = request.body ?? {};
+    // Identity is taken from the verified PathGen token only — ignore body spoof fields.
     const user = await users.upsertIdentity(tester.testerId, tester.inviteCode, {
-      clerkUserId: typeof body.clerkUserId === "string" ? body.clerkUserId : undefined,
-      clerkEmail: typeof body.clerkEmail === "string" ? body.clerkEmail : undefined,
+      clerkUserId: tester.clerkUserId,
       connections: body.connections,
       billingSnapshot: body.billingSnapshot,
     });

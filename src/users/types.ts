@@ -28,6 +28,7 @@ export interface CloudAppPreferences {
   reduceAnimations: boolean;
   showBetaRoutes: boolean;
   theme?: "light" | "dark";
+  preferencesUpdatedAt?: number;
 }
 
 export interface CloudConnections {

@@ -195,6 +195,14 @@ export async function registerReplayRoutes(
     return { replay: publicReplay(replay) };
   });
 
+  app.delete<{ Params: { replayId: string } }>("/api/replays/:replayId", async (request, reply) => {
+    const tester = (request as AuthedReplayRequest).tester;
+    await prepareTester(tester);
+    const deleted = store.deleteReplay(request.params.replayId, tester.testerId);
+    if (!deleted) return reply.code(404).send({ error: "Replay not found." });
+    return { ok: true };
+  });
+
   app.post<{ Params: { replayId: string } }>(
     "/api/replays/:replayId/deep-analyze",
     async (request, reply) => {

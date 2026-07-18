@@ -46,7 +46,8 @@ export async function registerRoutingHistoryRoutes(
     await cloud.upsertRoutingSession({
       sessionId,
       testerId: tester.testerId,
-      clerkUserId: typeof body.clerkUserId === "string" ? body.clerkUserId : null,
+      // Never trust body clerkUserId — use verified PathGen token claims only.
+      clerkUserId: tester.clerkUserId ?? null,
       inviteCode: tester.inviteCode,
       nodeId: nodeId || "unknown",
       gameId: typeof body.gameId === "string" ? body.gameId : "fortnite",

@@ -3,6 +3,11 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 
 import { createToken, secureEquals, verifyToken, type TokenClaims } from "./auth.js";
+import {
+  createClerkSessionVerifier,
+  type ClerkIdentity,
+  type ClerkSessionVerifier,
+} from "./clerkAuth.js";
 import type { PathGenConfig } from "./config.js";
 import { initSupabase } from "./supabase.js";
 import { CloudDataSync } from "./cloud/supabaseSync.js";
@@ -33,10 +38,18 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
   const cloud = new CloudDataSync(supabase.client);
   store.setCloudSync(cloud);
 
+  const clerkVerifier = resolveClerkVerifier(config);
+
   if (supabase.enabled) {
     app.log.info({ url: supabase.url }, "Supabase client initialized");
   } else {
     app.log.warn("Supabase is disabled or not configured; cloud user sync is offline");
+  }
+
+  if (config.isProduction && !clerkVerifier) {
+    app.log.error(
+      "Clerk JWKS verification is not configured — PathGen login will fail closed in production",
+    );
   }
 
   await app.register(cors, { origin: true });
@@ -80,55 +93,68 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
       await reply.code(401).send({ error: "Unauthorized" });
       return;
     }
+    if (config.requireClerkSubject && tester.testerId !== "service_bot" && !tester.clerkUserId) {
+      await reply.code(401).send({ error: "Unauthorized" });
+      return;
+    }
     store.rememberClerkIdentity(tester.testerId, tester.clerkUserId);
     (request as AuthedRequest).tester = tester;
   });
 
+  // Public health: minimal status only — no Supabase/Clerk/secret/config leakage.
   app.get("/health", async () => ({
     ok: true,
-    service: "routelag-stationary-server",
-    osirionConfigured: Boolean(config.osirionApiKey),
-    supabaseConfigured: users.enabled,
-    supabaseUrl: supabase.url,
-    supabaseKeyRole: supabase.keyRole,
-    epicConfigured: Boolean(config.epicClientId && config.epicClientSecret && config.epicRedirectUri),
-    discordConfigured: Boolean(
-      config.discordClientId && config.discordClientSecret && config.discordRedirectUri,
-    ),
-    // Railway injects these; useful to confirm which git SHA is live.
-    gitSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.RAILWAY_GIT_COMMIT_SHA_SHORT ?? null,
-    buildAt: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
+    service: "pathgen",
+    version: resolvePublicVersion(),
   }));
 
   app.post<{
-    Body: { inviteCode?: string; code?: string; emailOrInvite?: string; clerkUserId?: string };
+    Body: {
+      inviteCode?: string;
+      code?: string;
+      emailOrInvite?: string;
+      clerkUserId?: string;
+      clerkSessionToken?: string;
+      clerkToken?: string;
+    };
   }>("/api/auth/login", async (request, reply) =>
-    handleInviteLogin(request, reply, config, app, users, store, cloud),
+    handleLogin(request, reply, config, app, clerkVerifier, users, store, cloud),
   );
 
   app.post<{
-    Body: { code?: string; inviteCode?: string; emailOrInvite?: string; clerkUserId?: string };
+    Body: {
+      code?: string;
+      inviteCode?: string;
+      emailOrInvite?: string;
+      clerkUserId?: string;
+      clerkSessionToken?: string;
+      clerkToken?: string;
+    };
   }>("/api/beta/login", async (request, reply) => {
-      const inviteCode = (
-        request.body.code ??
-        request.body.inviteCode ??
-        request.body.emailOrInvite ??
-        ""
-      ).trim();
-      return handleInviteLogin(
-        {
-          ...request,
-          body: { inviteCode, clerkUserId: request.body.clerkUserId },
-        } as typeof request,
-        reply,
-        config,
-        app,
-        users,
-        store,
-        cloud,
-      );
-    },
-  );
+    const inviteCode = (
+      request.body.code ??
+      request.body.inviteCode ??
+      request.body.emailOrInvite ??
+      ""
+    ).trim();
+    return handleLogin(
+      {
+        ...request,
+        body: {
+          inviteCode,
+          clerkSessionToken: request.body.clerkSessionToken ?? request.body.clerkToken,
+          // Intentionally drop body clerkUserId — identity must come from verified Clerk JWT.
+        },
+      } as typeof request,
+      reply,
+      config,
+      app,
+      clerkVerifier,
+      users,
+      store,
+      cloud,
+    );
+  });
 
   await registerReplayRoutes(app, config, store);
   await registerUserRoutes(app, users);
@@ -151,50 +177,116 @@ export async function buildApp(config: PathGenConfig): Promise<FastifyInstance> 
   return app;
 }
 
-async function handleInviteLogin(
+function resolveClerkVerifier(config: PathGenConfig): ClerkSessionVerifier | null {
+  if (config.clerkSessionVerifier) return config.clerkSessionVerifier;
+  if (!config.clerkIssuer || !config.clerkJwksUrl) return null;
+  return createClerkSessionVerifier({
+    issuer: config.clerkIssuer,
+    jwksUrl: config.clerkJwksUrl,
+    audiences: config.clerkAudiences,
+    authorizedParties: config.clerkAuthorizedParties,
+  });
+}
+
+async function handleLogin(
   request: FastifyRequest<{
-    Body: { inviteCode?: string; emailOrInvite?: string; clerkUserId?: string };
+    Body: {
+      inviteCode?: string;
+      emailOrInvite?: string;
+      clerkUserId?: string;
+      clerkSessionToken?: string;
+      clerkToken?: string;
+    };
   }>,
   reply: FastifyReply,
   config: PathGenConfig,
   app: FastifyInstance,
+  clerkVerifier: ClerkSessionVerifier | null,
   users?: UserStore,
   store?: ReplayStore,
   cloud?: CloudDataSync,
 ) {
-  const inviteCode = (request.body.inviteCode ?? request.body.emailOrInvite ?? "").trim();
-  const clerkUserId =
+  // Body-supplied clerkUserId / email are never trusted as identity.
+  const bodyClerkUserId =
     typeof request.body.clerkUserId === "string" ? request.body.clerkUserId.trim() : "";
-  if (!isInviteAllowed(inviteCode, config.inviteCodes, clerkUserId)) {
-    app.log.warn({ event: "pathgen_login_failure" }, "PathGen login failed");
-    return reply.code(401).send({ error: "Invalid invite code" });
+  if (bodyClerkUserId) {
+    app.log.warn(
+      { event: "pathgen_login_spoof_attempt" },
+      "Ignored client-supplied clerkUserId on PathGen login",
+    );
   }
-  const canonicalInvite = resolveInviteCode(inviteCode || clerkUserId, config.inviteCodes);
-  const auth = createToken(canonicalInvite, config.authSecret, {
-    clerkUserId: clerkUserId || undefined,
-  });
-  store?.rememberClerkIdentity(auth.testerId, clerkUserId || undefined);
 
-  // Pull legacy email/invite ownership onto the Clerk-stable tester id so Epic + replays survive.
-  if (users?.enabled && clerkUserId) {
+  const inviteCode = (request.body.inviteCode ?? request.body.emailOrInvite ?? "").trim();
+  const clerkSessionToken = extractClerkSessionToken(request);
+
+  let clerkIdentity: ClerkIdentity | null = null;
+  if (clerkSessionToken) {
+    if (!clerkVerifier) {
+      app.log.error({ event: "pathgen_login_clerk_unconfigured" }, "Clerk verification unavailable");
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    clerkIdentity = await clerkVerifier(clerkSessionToken);
+    if (!clerkIdentity) {
+      app.log.warn({ event: "pathgen_login_failure" }, "PathGen Clerk token verification failed");
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+  }
+
+  if (!clerkIdentity) {
+    if (!config.allowInviteLogin) {
+      app.log.warn({ event: "pathgen_login_failure" }, "PathGen login missing Clerk session");
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    if (!isInviteAllowed(inviteCode, config.inviteCodes)) {
+      app.log.warn({ event: "pathgen_login_failure" }, "PathGen invite login failed");
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+  }
+
+  const canonicalInvite = clerkIdentity
+    ? resolveInviteCode(inviteCode, config.inviteCodes) || "clerk"
+    : resolveInviteCode(inviteCode, config.inviteCodes);
+
+  const auth = createToken(canonicalInvite, config.authSecret, {
+    clerkUserId: clerkIdentity?.clerkUserId,
+    ttlSec: config.pathgenTokenTtlSec,
+  });
+  store?.rememberClerkIdentity(auth.testerId, clerkIdentity?.clerkUserId);
+
+  // Safe migration: invite-code ownership only (allowlisted shared secret).
+  // Never merge accounts based solely on an unverified client-provided email.
+  if (users?.enabled && clerkIdentity && inviteCode && isInviteAllowed(inviteCode, config.inviteCodes)) {
     try {
-      const legacy =
-        (await users.getUserByInviteOrEmail(canonicalInvite)) ??
-        (inviteCode.includes("@") ? await users.getUserByInviteOrEmail(inviteCode) : null);
+      const legacy = await users.getUserByInviteCodeExact(inviteCode);
       if (legacy && legacy.testerId !== auth.testerId) {
-        const movedCloud =
-          (await cloud?.migrateTesterOwnership(legacy.testerId, auth.testerId, clerkUserId)) ?? 0;
-        store?.migrateInviteOwnership(canonicalInvite, auth.testerId);
-        await users.mergeLinkedAccounts(legacy.testerId, auth.testerId);
-        app.log.info(
-          {
-            event: "pathgen_identity_merged",
-            fromTesterId: legacy.testerId,
-            toTesterId: auth.testerId,
-            movedCloud,
-          },
-          "Merged legacy PathGen account onto Clerk tester id",
-        );
+        if (legacy.clerkUserId && legacy.clerkUserId !== clerkIdentity.clerkUserId) {
+          app.log.warn(
+            {
+              event: "pathgen_identity_merge_blocked",
+              fromTesterId: legacy.testerId,
+              toTesterId: auth.testerId,
+            },
+            "Invite-linked account already bound to a different Clerk user — manual review required",
+          );
+        } else {
+          const movedCloud =
+            (await cloud?.migrateTesterOwnership(
+              legacy.testerId,
+              auth.testerId,
+              clerkIdentity.clerkUserId,
+            )) ?? 0;
+          store?.migrateInviteOwnership(canonicalInvite === "clerk" ? inviteCode : canonicalInvite, auth.testerId);
+          await users.mergeLinkedAccounts(legacy.testerId, auth.testerId);
+          app.log.info(
+            {
+              event: "pathgen_identity_merged",
+              fromTesterId: legacy.testerId,
+              toTesterId: auth.testerId,
+              movedCloud,
+            },
+            "Merged invite-linked PathGen account onto verified Clerk tester id",
+          );
+        }
       }
     } catch (error) {
       app.log.warn({ err: error, testerId: auth.testerId }, "Legacy identity merge failed");
@@ -202,46 +294,65 @@ async function handleInviteLogin(
   }
 
   if (store) {
-    const moved = store.migrateInviteOwnership(canonicalInvite, auth.testerId);
-    if (moved > 0) {
-      app.log.info(
-        { event: "pathgen_identity_migrated", testerId: auth.testerId, moved },
-        "Migrated legacy replay ownership to stable tester id",
+    if (inviteCode && isInviteAllowed(inviteCode, config.inviteCodes)) {
+      const moved = store.migrateInviteOwnership(
+        resolveInviteCode(inviteCode, config.inviteCodes),
+        auth.testerId,
       );
+      if (moved > 0) {
+        app.log.info(
+          { event: "pathgen_identity_migrated", testerId: auth.testerId, moved },
+          "Migrated legacy replay ownership to stable tester id",
+        );
+      }
     }
-    await store.hydrateFromCloud(auth.testerId, clerkUserId || undefined);
+    await store.hydrateFromCloud(auth.testerId, clerkIdentity?.clerkUserId);
     store.repairReplaySummaries(auth.testerId);
   }
   if (users?.enabled) {
     void users
       .ensureUser(auth.testerId, canonicalInvite, {
-        clerkUserId: clerkUserId || undefined,
-        clerkEmail: inviteCode.includes("@") ? inviteCode : undefined,
+        clerkUserId: clerkIdentity?.clerkUserId,
+        // Email only from verified Clerk claims — never from the request body.
+        clerkEmail: clerkIdentity?.email,
       })
       .catch((error) => {
         app.log.warn({ err: error, testerId: auth.testerId }, "Supabase ensureUser on login failed");
       });
   }
   app.log.info(
-    { event: "pathgen_login_success", testerId: auth.testerId, hasClerkId: Boolean(clerkUserId) },
+    {
+      event: "pathgen_login_success",
+      testerId: auth.testerId,
+      hasClerkId: Boolean(clerkIdentity?.clerkUserId),
+      inviteLogin: !clerkIdentity,
+    },
     "PathGen login succeeded",
   );
   return { token: auth.token, testerId: auth.testerId };
 }
 
-function isEmailIdentity(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+function extractClerkSessionToken(
+  request: FastifyRequest<{
+    Body: { clerkSessionToken?: string; clerkToken?: string };
+  }>,
+): string {
+  const header = request.headers.authorization;
+  if (header?.startsWith("Bearer ")) {
+    const bearer = header.slice("Bearer ".length).trim();
+    // PathGen mint tokens are HS256 with our secret; Clerk session tokens are also JWTs.
+    // Login accepts Bearer as the Clerk session token (desktop sends getToken()).
+    if (bearer) return bearer;
+  }
+  const fromBody =
+    (typeof request.body.clerkSessionToken === "string" && request.body.clerkSessionToken) ||
+    (typeof request.body.clerkToken === "string" && request.body.clerkToken) ||
+    "";
+  return fromBody.trim();
 }
 
-function isInviteAllowed(
-  inviteCode: string,
-  inviteCodes: Set<string>,
-  clerkUserId = "",
-): boolean {
-  // Any signed-in Clerk user can bootstrap PathGen (Epic link + cloud sync).
-  if (clerkUserId.startsWith("user_")) return true;
+function isInviteAllowed(inviteCode: string, inviteCodes: Set<string>): boolean {
   if (!inviteCode) return false;
-  if (isEmailIdentity(inviteCode)) return true;
   if (inviteCodes.has(inviteCode)) return true;
   const lower = inviteCode.toLowerCase();
   for (const code of inviteCodes) {
@@ -251,10 +362,22 @@ function isInviteAllowed(
 }
 
 function resolveInviteCode(inviteCode: string, inviteCodes: Set<string>): string {
+  if (!inviteCode) return "";
   if (inviteCodes.has(inviteCode)) return inviteCode;
   const lower = inviteCode.toLowerCase();
   for (const code of inviteCodes) {
     if (code.toLowerCase() === lower) return code;
   }
   return inviteCode;
+}
+
+/** Safe public build label — package version plus optional short commit, never secrets. */
+function resolvePublicVersion(): string {
+  const pkgVersion = process.env.npm_package_version?.trim() || "0.1.0";
+  const sha =
+    process.env.RAILWAY_GIT_COMMIT_SHA?.trim() ||
+    process.env.RAILWAY_GIT_COMMIT_SHA_SHORT?.trim() ||
+    "";
+  if (sha) return `${pkgVersion}+${sha.slice(0, 7)}`;
+  return pkgVersion;
 }

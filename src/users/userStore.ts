@@ -160,8 +160,9 @@ export class UserStore {
     return rowToUser(data as PathgenUserRow);
   }
 
-  async getUserByInviteOrEmail(inviteOrEmail: string): Promise<CloudUserDocument | null> {
-    const value = inviteOrEmail.trim();
+  /** Exact invite_code match only — never use email as an authorization key. */
+  async getUserByInviteCodeExact(inviteCode: string): Promise<CloudUserDocument | null> {
+    const value = inviteCode.trim();
     if (!value) return null;
     const { data: byInvite, error: inviteError } = await this.client()
       .from("pathgen_users")
@@ -169,8 +170,19 @@ export class UserStore {
       .eq("invite_code", value)
       .maybeSingle();
     if (inviteError) throw new Error(`Supabase getUserByInvite failed: ${inviteError.message}`);
-    if (byInvite) return rowToUser(byInvite as PathgenUserRow);
+    if (!byInvite) return null;
+    return rowToUser(byInvite as PathgenUserRow);
+  }
 
+  /**
+   * @deprecated Prefer getUserByInviteCodeExact or getUserByClerkId.
+   * Email lookup is retained for ops/manual review tooling only — never for auth.
+   */
+  async getUserByInviteOrEmail(inviteOrEmail: string): Promise<CloudUserDocument | null> {
+    const byInvite = await this.getUserByInviteCodeExact(inviteOrEmail);
+    if (byInvite) return byInvite;
+
+    const value = inviteOrEmail.trim();
     if (!value.includes("@")) return null;
     const { data: byEmail, error: emailError } = await this.client()
       .from("pathgen_users")
