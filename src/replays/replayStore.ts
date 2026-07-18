@@ -92,6 +92,9 @@ export class ReplayStore {
     let changed = 0;
 
     for (const job of cloudJobs) {
+      // Keep cloud ownership when present; never reassign another tester's row.
+      const ownerId = job.userId && job.userId !== userId ? job.userId : userId;
+      if (ownerId !== userId) continue;
       const normalized: ReplayJob = { ...job, userId };
       const idx = db.jobs.findIndex((item) => item.id === normalized.id);
       if (idx < 0) {
@@ -100,6 +103,7 @@ export class ReplayStore {
         continue;
       }
       const local = db.jobs[idx]!;
+      if (local.userId && local.userId !== userId) continue;
       if (Date.parse(normalized.updatedAt) >= Date.parse(local.updatedAt)) {
         db.jobs[idx] = { ...local, ...normalized, userId };
         changed += 1;
@@ -107,6 +111,11 @@ export class ReplayStore {
     }
 
     for (const replay of cloudReplays) {
+      const ownerId =
+        replay.summary.userId && replay.summary.userId !== userId
+          ? replay.summary.userId
+          : userId;
+      if (ownerId !== userId) continue;
       const normalized: PathGenReplayDetail = {
         ...replay,
         summary: { ...replay.summary, userId },
@@ -118,6 +127,7 @@ export class ReplayStore {
         continue;
       }
       const local = db.replays[idx]!;
+      if (local.summary.userId && local.summary.userId !== userId) continue;
       const localTs = Date.parse(String(local.summary.parsedAt ?? local.summary.createdAt)) || 0;
       const cloudTs =
         Date.parse(String(normalized.summary.parsedAt ?? normalized.summary.createdAt)) || 0;
@@ -238,10 +248,15 @@ export class ReplayStore {
   /**
    * Re-attach jobs/replays created under older random tester IDs to the stable
    * invite-derived testerId so the desktop library is not empty after re-login.
+   *
+   * Only real allowlisted invite codes may migrate. The Clerk sentinel `"clerk"`
+   * is shared by every Clerk-authenticated user and must never move ownership.
    */
   migrateInviteOwnership(inviteCode: string, testerId: string): number {
     const code = inviteCode.trim();
-    if (!code) return 0;
+    if (!code || code.toLowerCase() === "clerk") return 0;
+    // Emails / free-form body strings are not shared invite secrets.
+    if (code.includes("@")) return 0;
     const db = this.read();
     let moved = 0;
 

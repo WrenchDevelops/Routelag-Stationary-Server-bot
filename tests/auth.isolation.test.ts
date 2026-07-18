@@ -326,6 +326,94 @@ test("users cannot list/read/delete another user's replays", async () => {
   await app.close();
 });
 
+test("shared clerk invite sentinel does not migrate jobs across Clerk users", async () => {
+  resetSupabaseForTests();
+  const dataFile = testDataFile();
+  const victimId = stableClerkTesterId("user_victim_clerk");
+  const attackerId = stableClerkTesterId("user_attacker_clerk");
+  const store = new ReplayStore(dataFile);
+  const job = store.createJob({
+    userId: victimId,
+    inviteCode: "clerk",
+    fileName: "victim-clerk.replay",
+    fileHash: "hash-clerk-victim",
+    fileSizeBytes: 12,
+    status: "parsed",
+    provider: "osirion",
+  });
+  store.saveReplay({
+    summary: {
+      id: "replay_clerk_victim",
+      userId: victimId,
+      jobId: job.id,
+      fileName: "victim-clerk.replay",
+      fileHash: "hash-clerk-victim",
+      status: "parsed",
+      parseTier: "basic",
+      deepParseStatus: "available",
+      createdAt: new Date().toISOString(),
+    },
+    player: {},
+    keyMoments: [],
+  });
+
+  const config = loadConfig({
+    port: 0,
+    authSecret: "test-secret",
+    inviteCodes: new Set(["TEST-CODE"]),
+    osirionApiKey: "",
+    supabaseDisabled: true,
+    isProduction: false,
+    allowInviteLogin: false,
+    requireClerkSubject: true,
+    replayDataFile: dataFile,
+  });
+  const app = await buildApp(config);
+  await app.ready();
+
+  const { token: attackerToken } = createToken("clerk", config.authSecret, {
+    clerkUserId: "user_attacker_clerk",
+  });
+  assert.equal(stableClerkTesterId("user_attacker_clerk"), attackerId);
+
+  const jobs = await app.inject({
+    method: "GET",
+    url: "/api/replays/jobs",
+    headers: { authorization: `Bearer ${attackerToken}` },
+  });
+  assert.equal(jobs.statusCode, 200);
+  assert.deepEqual(jobs.json<{ jobs: unknown[] }>().jobs, []);
+
+  const jobRead = await app.inject({
+    method: "GET",
+    url: `/api/replays/jobs/${job.id}`,
+    headers: { authorization: `Bearer ${attackerToken}` },
+  });
+  assert.equal(jobRead.statusCode, 404);
+
+  const list = await app.inject({
+    method: "GET",
+    url: "/api/replays",
+    headers: { authorization: `Bearer ${attackerToken}` },
+  });
+  assert.equal(list.statusCode, 200);
+  assert.deepEqual(list.json<{ replays: unknown[] }>().replays, []);
+
+  const { token: victimToken } = createToken("clerk", config.authSecret, {
+    clerkUserId: "user_victim_clerk",
+  });
+  const victimJobs = await app.inject({
+    method: "GET",
+    url: "/api/replays/jobs",
+    headers: { authorization: `Bearer ${victimToken}` },
+  });
+  assert.equal(victimJobs.statusCode, 200);
+  assert.equal(victimJobs.json<{ jobs: { id: string }[] }>().jobs.length, 1);
+  assert.equal(victimJobs.json<{ jobs: { id: string }[] }>().jobs[0]?.id, job.id);
+
+  await app.close();
+});
+
 test("identity and profile updates cannot override another user's clerk subject via body", async () => {
   resetSupabaseForTests();
   const config = loadConfig({

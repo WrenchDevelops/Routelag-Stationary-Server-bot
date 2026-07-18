@@ -36,7 +36,25 @@ export async function registerReplayRoutes(
 
   async function prepareTester(tester: TokenClaims) {
     store.rememberClerkIdentity(tester.testerId, tester.clerkUserId);
-    store.migrateInviteOwnership(tester.inviteCode, tester.testerId);
+    // Only migrate for real allowlisted invite secrets — never the shared "clerk" sentinel.
+    const invite = tester.inviteCode?.trim() ?? "";
+    let allowlistedInvite = "";
+    if (invite && invite.toLowerCase() !== "clerk" && !invite.includes("@")) {
+      if (config.inviteCodes.has(invite)) {
+        allowlistedInvite = invite;
+      } else {
+        const lower = invite.toLowerCase();
+        for (const code of config.inviteCodes) {
+          if (code.toLowerCase() === lower) {
+            allowlistedInvite = code;
+            break;
+          }
+        }
+      }
+    }
+    if (allowlistedInvite) {
+      store.migrateInviteOwnership(allowlistedInvite, tester.testerId);
+    }
     try {
       await store.hydrateFromCloud(tester.testerId, tester.clerkUserId);
     } catch (error) {

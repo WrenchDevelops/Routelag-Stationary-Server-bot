@@ -243,8 +243,12 @@ async function handleLogin(
     }
   }
 
+  // Body invite/email is never identity. Only an allowlisted invite may be stored
+  // on the PathGen token (for legacy migration). Otherwise use the Clerk sentinel.
   const canonicalInvite = clerkIdentity
-    ? resolveInviteCode(inviteCode, config.inviteCodes) || "clerk"
+    ? inviteCode && isInviteAllowed(inviteCode, config.inviteCodes)
+      ? resolveInviteCode(inviteCode, config.inviteCodes)
+      : "clerk"
     : resolveInviteCode(inviteCode, config.inviteCodes);
 
   const auth = createToken(canonicalInvite, config.authSecret, {
